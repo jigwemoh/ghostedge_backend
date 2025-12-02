@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+nba_api
+roboflow
+pandas
+pydantic
+requests
