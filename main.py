@@ -19,10 +19,10 @@ app.add_middleware(
 )
 
 # 2. ROBOFLOW SETUP (Replace these with your keys)
-ROBOFLOW_API_KEY = "YOUR_ROBOFLOW_API_KEY"
-rf = Roboflow(api_key=ROBOFLOW_API_KEY)
-# These come from your Roboflow URL: app.roboflow.com/WORKSPACE/PROJECT/VERSION
-PROJECT_ID = "your-project-name" 
+ROBOFLOW_API_KEY = "qAlg5YDpSJUydgkxAmFl"
+rf = Roboflow(api_key="qAlg5YDpSJUydgkxAmFl")
+# These come from your Roboflow URL: https://serverless.roboflow.com
+PROJECT_ID = "ghostedge-vision-o0yot" 
 VERSION_NUMBER = 1 
 
 # --- DATA MODELS ---
