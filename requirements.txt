@@ -1,7 +1,12 @@
 fastapi
 uvicorn
-nba_api
-roboflow
-pandas
 pydantic
-requests
+python-dotenv
+openai
+anthropic
+google-generativeai
+pandas
+numpy
+scikit-learn
+xgboost
+lightgbm

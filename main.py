@@ -1,97 +1,71 @@
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from nba_api.stats.static import players
-from nba_api.stats.endpoints import playergamelog
-from roboflow import Roboflow
-import random
+from pydantic import BaseModel  # <--- THIS WAS MISSING
+from typing import Optional, Dict, Any
+from dotenv import load_dotenv
+
+# Import our custom modules
+# Make sure these folders exist: src/data/ and w5_engine/
+from src.data.loader import real_data_loader
+from w5_engine.debate import ConsensusEngine
+
+load_dotenv()
 
 app = FastAPI()
 
-# --- CONFIGURATION ---
-# 1. Allow Lovable to talk to this API
+# Enable CORS so Lovable can talk to this backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 2. ROBOFLOW SETUP (Replace these with your keys)
-ROBOFLOW_API_KEY = "qAlg5YDpSJUydgkxAmFl"
-rf = Roboflow(api_key="qAlg5YDpSJUydgkxAmFl")
-# These come from your Roboflow URL: https://serverless.roboflow.com
-PROJECT_ID = "ghostedge-vision-o0yot" 
-VERSION_NUMBER = 1 
+# Define the data we expect from the Frontend
+class MatchRequest(BaseModel):
+    event_id: int 
+    home_team_id: int
+    away_team_id: int
+    league_id: int
+    home_team_name: str
+    away_team_name: str
 
-# --- DATA MODELS ---
-class PropRequest(BaseModel):
-    player_name: str
-    stat_category: str = "PTS"
-
-class VisionRequest(BaseModel):
-    image_url: str # The frontend sends a URL of the video frame
-
-# --- ENDPOINTS ---
-
-@app.get("/")
-def home():
-    return {"status": "GhostEdge Brain is Online"}
-
-# 1. THE PROP MASTER (NBA Stats)
-@app.post("/analyze/prop")
-async def analyze_prop(request: PropRequest):
+@app.post("/analyze/consensus")
+async def run_consensus(match: MatchRequest):
     try:
-        # Get Player ID
-        player_dict = players.find_players_by_full_name(request.player_name)
-        if not player_dict: return {"error": "Player not found"}
-        player_id = player_dict[0]['id']
+        print(f"👻 Analyzing Event {match.event_id} with Deep Data...")
 
-        # Get Last 5 Games
-        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season='2024-25')
-        df = gamelog.get_data_frames()[0].head(5)
-        
-        if df.empty: return {"error": "No stats available"}
+        # 1. FETCH REAL DATA (From RapidAPI)
+        match_context = real_data_loader.fetch_full_match_context(
+            event_id=match.event_id,
+            home_id=match.home_team_id,
+            away_id=match.away_team_id,
+            league_id=match.league_id
+        )
 
-        # Calculate Average
-        avg_stat = df[request.stat_category].mean()
+        # 2. RUN W-5 ENGINE (The AI Debate)
+        engine = ConsensusEngine(debate_rounds=2, min_agents=3)
         
-        # Simulated "Edge" Logic
-        defense_rating = random.randint(100, 120) 
-        edge_multiplier = 1.05 if defense_rating > 110 else 0.95
-        prediction = avg_stat * edge_multiplier
-        
-        return {
-            "player": request.player_name,
-            "stat": request.stat_category,
-            "avg_last_5": round(avg_stat, 1),
-            "prediction": round(prediction, 1),
-            "edge": "High Value" if prediction > avg_stat else "Pass",
-            "narrative": f"Opponent defense is rated {defense_rating}. Trends suggest a {round((edge_multiplier-1)*100)}% shift."
+        # Structure the data for the Agents
+        agent_data_packet = {
+            "home_team": match.home_team_name,
+            "away_team": match.away_team_name,
+            "quantitative_features": match_context['quantitative_features'],
+            "qualitative_context": str(match_context['qualitative_context'])
         }
-    except Exception as e:
-        return {"error": str(e)}
 
-# 2. THE GHOST VISION (Roboflow AI)
-@app.post("/analyze/vision")
-async def analyze_vision(request: VisionRequest):
-    try:
-        # Load your specific model
-        project = rf.workspace().project(PROJECT_ID)
-        model = project.version(VERSION_NUMBER).model
-        
-        # Send the image URL to Roboflow's Cloud (Not your server RAM)
-        # This keeps your Render server from crashing
-        prediction = model.predict(request.image_url, confidence=40, overlap=30).json()
-        
-        # Parse the result
-        detected_objects = [p['class'] for p in prediction['predictions']]
-        
+        # Start the debate
+        result = engine.run_consensus(agent_data_packet)
+
         return {
-            "detected": detected_objects,
-            "raw_data": prediction,
-            "alert": "CORNER KICK" if "corner_kick" in detected_objects else "No Signal"
+            "consensus_prediction": result['consensus_prediction'],
+            "confidence": result['confidence'],
+            "debate_summary": result['debate_summary'],
+            "match_data_used": match_context
         }
+
     except Exception as e:
-        return {"error": str(e)}
+        print(f"❌ Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
