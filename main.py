@@ -13,7 +13,15 @@ from w5_engine.debate import ConsensusEngine
 load_dotenv()
 
 app = FastAPI()
+# ... imports ...
 
+# --- ADD THIS BLOCK ---
+@app.get("/")
+def health_check():
+    return {"status": "GhostEdge AI is Online", "version": "1.0"}
+# ----------------------
+
+# ... rest of your code ...
 # Enable CORS so Lovable can talk to this backend
 app.add_middleware(
     CORSMiddleware,
