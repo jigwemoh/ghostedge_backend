@@ -47,7 +47,7 @@ def health_check():
     return {
         "status": "GhostEdge AI is Online", 
         "mode": "Event-Centric (SoccerData/FBref)", 
-        "version": "3.1"
+        "version": "3.2"
     }
 
 # 6. DATA MODEL
@@ -72,11 +72,13 @@ async def run_consensus(match: MatchRequest):
         )
 
         # --- STEP B: PREPARE DATA FOR AI AGENTS ---
+        # FIX: We must pass 'qualitative_context' as a DICT, not a STRING.
+        # The agents.py file expects to use .get('venue'), which requires a dictionary.
         agent_data_packet = {
             "home_team": match.home_team_name,
             "away_team": match.away_team_name,
             "quantitative_features": match_context.get('quantitative_features', {}),
-            "qualitative_context": str(match_context.get('qualitative_context', {}))
+            "qualitative_context": match_context.get('qualitative_context', {}) 
         }
 
         # --- STEP C: RUN THE W-5 DEBATE ENGINE ---
