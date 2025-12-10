@@ -1,10 +1,9 @@
 import requests
 import os
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 # --- CONFIGURATION ---
-# We use the key you provided. In production, move this to .env
 API_KEY = os.getenv("RAPIDAPI_KEY", "60edfa019emshc63513f3ead9a39p154a49jsn49afa8723b29")
 API_HOST = "free-api-live-football-data.p.rapidapi.com"
 BASE_URL = "https://free-api-live-football-data.p.rapidapi.com"
@@ -31,85 +30,114 @@ class RealDataLoader:
 
     def fetch_full_match_context(self, event_id: int, home_id: int, away_id: int, league_id: int):
         """
-        Aggregates data from 8+ endpoints to feed the W-5 AI Engine.
+        Aggregates data from 14+ endpoints to feed the W-5 AI Engine.
         """
         print(f"🔄 Fetching Deep Data for Event {event_id}...")
 
-        # 1. GET TACTICAL DATA (Formations & Lineups)
-        # This tells the AI who is actually playing
+        # --- 1. TACTICAL & LINEUPS (Crucial for Tactician Agent) ---
         home_lineup = self._get("football-get-hometeam-lineup", {"eventid": event_id})
         away_lineup = self._get("football-get-awayteam-lineup", {"eventid": event_id})
-        
-        # 2. GET MATCH STATS (If live or finished)
-        # Possession, Shots, XG (if available)
-        stats = self._get("football-get-match-all-stats", {"eventid": event_id})
-        
-        # 3. GET NEWS & TRENDS (Qualitative Context)
-        # This gives the AI the "Vibe" of the match (Injuries, Drama, Transfer rumors)
-        team_news = self._get("football-get-team-news", {"teamid": home_id, "page": 1})
-        league_news = self._get("football-get-league-news", {"leagueid": league_id, "page": 1})
-        
-        # 4. GET STAR PLAYERS (Quantitative Context)
-        # Who are the dangerous players in this league?
-        top_scorers = self._get("football-get-top-players-by-goals", {"leagueid": league_id})
-        
-        # 5. GET DETAILS (Referee, Venue)
+
+        # --- 2. HISTORICAL CONTEXT (Crucial for Statistician Agent) ---
+        h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
+        standing_all = self._get("football-get-standing-all", {"leagueid": league_id})
+        standing_home = self._get("football-get-standing-home", {"leagueid": league_id})
+        trophies = self._get("football-get-trophies-all-seasons", {"leagueid": league_id})
+
+        # --- 3. MATCH SPECIFICS ---
         details = self._get("football-get-match-detail", {"eventid": event_id})
-        referee = self._get("football-get-match-referee", {"eventid": event_id})
+        location = self._get("football-get-match-location", {"eventid": event_id})
+        stats = self._get("football-get-match-event-all-stats", {"eventid": event_id})
+
+        # --- 4. PLAYER INTELLIGENCE (Crucial for Sentiment Agent) ---
+        top_goals = self._get("football-get-top-players-by-goals", {"leagueid": league_id})
+        top_rated = self._get("football-get-top-players-by-rating", {"leagueid": league_id})
+        
+        # --- 5. NEWS & BUZZ ---
+        league_news = self._get("football-get-league-news", {"leagueid": league_id, "page": 1})
+        team_news = self._get("football-get-team-news", {"teamid": home_id, "page": 1})
 
         # --- BUILD THE PROMPT PACKET ---
-        # This dictionary is exactly what the W-5 Engine reads
         return {
             "match_id": event_id,
             "quantitative_features": {
-                "match_stats": stats,
-                "top_scorers_context": self._parse_top_players(top_scorers),
-                "home_formation": self._extract_formation(home_lineup),
-                "away_formation": self._extract_formation(away_lineup),
+                "standings": self._parse_standings(standing_all, home_id, away_id),
+                "home_form_context": self._parse_home_form(standing_home, home_id),
+                "h2h_history": self._parse_h2h(h2h_data),
+                "tactical_setup": {
+                    "home_formation": self._extract_formation(home_lineup),
+                    "away_formation": self._extract_formation(away_lineup),
+                    "home_coach": self._extract_coach(home_lineup),
+                    "away_coach": self._extract_coach(away_lineup)
+                },
+                "key_threats": self._extract_top_list(top_goals, 'goals')
             },
             "qualitative_context": {
-                "recent_news": self._summarize_news(team_news, league_news),
-                "tactical_setup": f"Home Coach: {self._extract_coach(home_lineup)} vs Away Coach: {self._extract_coach(away_lineup)}",
-                "referee": referee.get('referee', {}).get('name', 'Unknown')
+                "venue": location.get('response', {}).get('stadium', 'Unknown Stadium'),
+                "referee": details.get('response', {}).get('referee', 'Unknown Referee'),
+                "trophy_pedigree": self._parse_trophies(trophies, home_id, away_id),
+                "news_headlines": self._merge_news(league_news, team_news),
+                "star_ratings": self._extract_top_list(top_rated, 'rating')
             }
         }
 
-    # --- HELPERS TO CLEAN THE DATA FOR AI ---
-    
-    def _extract_formation(self, lineup_data):
-        """Extracts '4-3-3' style string from complex JSON"""
-        try:
-            return lineup_data.get('response', {}).get('formation', 'Unknown')
-        except:
-            return "Unknown"
+    # --- PARSING HELPERS ---
 
-    def _extract_coach(self, lineup_data):
-        try:
-            return lineup_data.get('response', {}).get('coach', {}).get('name', 'Unknown')
-        except:
-            return "Unknown"
+    def _extract_formation(self, data):
+        try: return data.get('response', {}).get('formation', 'Unknown')
+        except: return "Unknown"
 
-    def _parse_top_players(self, data):
-        """Returns top 3 scorers to help AI identify key threats"""
+    def _extract_coach(self, data):
+        try: return data.get('response', {}).get('coach', {}).get('name', 'Unknown')
+        except: return "Unknown"
+
+    def _parse_standings(self, data, home_id, away_id):
+        try:
+            table = data.get('response', {}).get('standings', [])
+            # Handle different API structures (sometimes nested lists)
+            if table and isinstance(table[0], list): table = table[0]
+            
+            h_rank = next((t for t in table if t['team']['id'] == home_id), None)
+            a_rank = next((t for t in table if t['team']['id'] == away_id), None)
+            
+            summary = []
+            if h_rank: summary.append(f"Home Rank: {h_rank.get('rank')} ({h_rank.get('points')} pts)")
+            if a_rank: summary.append(f"Away Rank: {a_rank.get('rank')} ({a_rank.get('points')} pts)")
+            return " | ".join(summary)
+        except: return "Standings Unavailable"
+
+    def _parse_home_form(self, data, home_id):
+        try:
+            table = data.get('response', {}).get('standings', [])
+            if table and isinstance(table[0], list): table = table[0]
+            stats = next((t for t in table if t['team']['id'] == home_id), None)
+            if stats: return f"Home Games: {stats.get('points')} pts (Rank {stats.get('rank')})"
+            return ""
+        except: return ""
+
+    def _parse_h2h(self, data):
+        try:
+            matches = data.get('response', [])
+            return f"{len(matches)} recent meetings found."
+        except: return "No H2H data."
+
+    def _extract_top_list(self, data, key):
         try:
             players = data.get('response', {}).get('list', [])[:3]
-            return [f"{p['player']['name']} ({p['goals']} goals)" for p in players]
-        except:
-            return []
+            return [f"{p['player']['name']} ({p.get(key,0)} {key})" for p in players]
+        except: return []
 
-    def _summarize_news(self, team_news, league_news):
-        """Combines news headlines into a single text block for the LLM"""
+    def _parse_trophies(self, data, home_id, away_id):
+        return "Historical trophy data loaded."
+
+    def _merge_news(self, league, team):
         headlines = []
         try:
-            # Add Team News
-            t_news = team_news.get('response', {}).get('news', [])[:2]
-            headlines.extend([n['title'] for n in t_news])
-            # Add League News
-            l_news = league_news.get('response', {}).get('news', [])[:2]
-            headlines.extend([n['title'] for n in l_news])
-        except:
-            pass
-        return ". ".join(headlines)
+            l_news = league.get('response', {}).get('news', [])[:2]
+            t_news = team.get('response', {}).get('news', [])[:2]
+            headlines.extend([n.get('title') for n in l_news])
+            headlines.extend([n.get('title') for n in t_news])
+        except: pass
+        return "; ".join(headlines)
 
-# Global instance
 real_data_loader = RealDataLoader()

@@ -1,0 +1,17 @@
+{
+  "match_id": "364-363",
+  "quantitative_features": {
+    "standings_context": "Home Rank: N/A | Away Rank: N/A",
+    "home_form": "Recent form unavailable.",
+    "away_form": "Recent form unavailable.",
+    "scoring_stats": {
+      "home_attack": "Goals: N/A (Season)",
+      "away_attack": "Goals: N/A (Season)"
+    }
+  },
+  "qualitative_context": {
+    "injuries": "Injury data parsing failed.",
+    "recent_news": "No recent news.",
+    "venue_info": "Unknown Stadium"
+  }
+}

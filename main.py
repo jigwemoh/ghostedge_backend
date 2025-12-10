@@ -1,28 +1,19 @@
 import os
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel  # <--- THIS WAS MISSING
-from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
-# Import our custom modules
-# Make sure these folders exist: src/data/ and w5_engine/
+# 1. LOAD KEYS
+load_dotenv()
+
+# 2. IMPORTS
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from src.data.loader import real_data_loader
 from w5_engine.debate import ConsensusEngine
 
-load_dotenv()
-
 app = FastAPI()
-# ... imports ...
 
-# --- ADD THIS BLOCK ---
-@app.get("/")
-def health_check():
-    return {"status": "GhostEdge AI is Online", "version": "1.0"}
-# ----------------------
-
-# ... rest of your code ...
-# Enable CORS so Lovable can talk to this backend
+# 3. CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define the data we expect from the Frontend
+# 4. DATA MODEL
 class MatchRequest(BaseModel):
     event_id: int 
     home_team_id: int
@@ -43,9 +34,9 @@ class MatchRequest(BaseModel):
 @app.post("/analyze/consensus")
 async def run_consensus(match: MatchRequest):
     try:
-        print(f"👻 Analyzing Event {match.event_id} with Deep Data...")
+        print(f"👻 Analyzing {match.home_team_name} vs {match.away_team_name} (Event {match.event_id})...")
 
-        # 1. FETCH REAL DATA (From RapidAPI)
+        # A. FETCH DEEP DATA (Lineups, News, Trophies)
         match_context = real_data_loader.fetch_full_match_context(
             event_id=match.event_id,
             home_id=match.home_team_id,
@@ -53,10 +44,7 @@ async def run_consensus(match: MatchRequest):
             league_id=match.league_id
         )
 
-        # 2. RUN W-5 ENGINE (The AI Debate)
-        engine = ConsensusEngine(debate_rounds=2, min_agents=3)
-        
-        # Structure the data for the Agents
+        # B. PREPARE AGENT PACKET
         agent_data_packet = {
             "home_team": match.home_team_name,
             "away_team": match.away_team_name,
@@ -64,9 +52,11 @@ async def run_consensus(match: MatchRequest):
             "qualitative_context": str(match_context['qualitative_context'])
         }
 
-        # Start the debate
+        # C. RUN DEBATE
+        engine = ConsensusEngine(debate_rounds=2, min_agents=3)
         result = engine.run_consensus(agent_data_packet)
 
+        # D. RETURN TO FRONTEND
         return {
             "consensus_prediction": result['consensus_prediction'],
             "confidence": result['confidence'],
