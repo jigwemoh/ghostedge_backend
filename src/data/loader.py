@@ -1,13 +1,14 @@
 import os
 import json
 import pandas as pd
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 # --- CONFIGURATION ---
+# Cache directory to prevent re-downloading data constantly (prevents IP bans)
 DATA_DIR = Path(os.getcwd()) / "soccer_data_cache"
 
-# Check availability
+# Check if libraries are installed
 try:
     import soccerdata as sd
     SOCCERDATA_AVAILABLE = True
@@ -16,10 +17,14 @@ except ImportError:
 
 class SoccerDataLoader:
     def __init__(self, league_code: str = "ENG-Premier League", season: str = "2425"):
+        """
+        Initializes the FBref scraper using the 'soccerdata' library.
+        
+        :param league_code: The league identifier (e.g., 'ENG-Premier League', 'ESP-La Liga')
+        :param season: The season string (e.g., '2425' for 2024-2025)
+        """
         if not SOCCERDATA_AVAILABLE:
-            print("❌ WARNING: 'soccerdata' not found. Loader will return empty data.")
-            self.scraper = None
-            return
+            raise ImportError("The 'soccerdata' library is missing. Install it with: pip install soccerdata pandas lxml html5lib")
 
         self.league_code = league_code
         self.season = season
@@ -27,38 +32,20 @@ class SoccerDataLoader:
         
         print(f"📚 Initializing FBref Scraper for {league_code} ({season})...")
         try:
+            # Initialize the scraper. 
+            # no_cache=False ensures we use local files if they exist (faster/safer)
             self.scraper = sd.FBref(leagues=league_code, seasons=season, data_dir=DATA_DIR)
         except Exception as e:
-            print(f"⚠️ Failed to initialize scraper: {e}")
+            print(f"⚠️ Failed to initialize soccerdata scraper: {e}")
 
-    def fetch_full_match_context(self, home_team: Union[str, int] = None, away_team: Union[str, int] = None, *args, **kwargs) -> Dict[str, Any]:
+    def fetch_full_match_context(self, home_team: str, away_team: str) -> Dict[str, Any]:
         """
-        Fetches data. Includes an adapter to handle legacy calls from main.py
-        """
-        # --- ADAPTER: HANDLE LEGACY CALLS (Keyword or Integer) ---
+        Fetches advanced stats, H2H, and standings using team names.
         
-        # Case 1: Called with legacy keywords (e.g. event_id=...) resulting in home_team=None
-        if home_team is None:
-            # Check if legacy keys exist in kwargs
-            legacy_keys = ['event_id', 'home_id', 'league_id']
-            if any(k in kwargs for k in legacy_keys):
-                print(f"⚠️ API MISMATCH: main.py sent legacy keyword arguments: {list(kwargs.keys())}")
-                print("   👉 Defaulting to 'Liverpool' vs 'Chelsea' for stability.")
-                home_team = "Liverpool"
-                away_team = "Chelsea"
-            else:
-                # Completely empty call or unknown args
-                print("⚠️ API MISMATCH: Called with no valid arguments. Defaulting.")
-                home_team = "Liverpool"
-                away_team = "Chelsea"
-
-        # Case 2: Called with legacy integers (e.g. 4621624)
-        if isinstance(home_team, int) or isinstance(away_team, int):
-            print(f"⚠️ API MISMATCH: main.py sent IDs ({home_team}, {away_team}) but soccerdata needs Team Names.")
-            print("   👉 Defaulting to 'Liverpool' vs 'Chelsea' for stability.")
-            home_team = "Liverpool"
-            away_team = "Chelsea"
-
+        :param home_team: Precise team name (e.g. "Liverpool", "Arsenal")
+        :param away_team: Precise team name (e.g. "Chelsea", "Everton")
+        :return: A dictionary containing quantitative and qualitative features.
+        """
         if not self.scraper:
             return {"error": "Scraper initialization failed"}
 
@@ -67,47 +54,67 @@ class SoccerDataLoader:
         # 1. FETCH STANDINGS
         standings_data = []
         try:
+            # read_standings() returns a DataFrame with the full table
             standings_df = self.scraper.read_standings()
+            
             if not standings_df.empty:
+                # Reset index to make 'team' a column, then convert to list of dicts
                 standings_data = standings_df.reset_index().to_dict(orient='records')
         except Exception as e:
             print(f"⚠️ Standings Error: {e}")
 
-        # 2. FETCH H2H
+        # 2. FETCH H2H (Derived from Historical Schedule)
         h2h_summary = "No H2H data."
         try:
+            # Get entire schedule for the configured season
             schedule = self.scraper.read_schedule()
+            
+            # Filter matches where these two teams played each other
             h2h_matches = schedule[
                 ((schedule['home_team'] == home_team) & (schedule['away_team'] == away_team)) |
                 ((schedule['home_team'] == away_team) & (schedule['away_team'] == home_team))
             ]
+            
             if not h2h_matches.empty:
                 count = len(h2h_matches)
-                last_date = h2h_matches.iloc[-1]['date']
-                h2h_summary = f"{count} meetings this season. Last: {last_date}"
+                # Get the last match date
+                last_match_date = h2h_matches.iloc[-1]['date']
+                h2h_summary = f"{count} meetings this season. Last meeting: {last_match_date}"
+            else:
+                h2h_summary = "No previous meetings found in this dataset."
         except Exception as e:
-            h2h_summary = "No H2H found (check team names)."
+            print(f"⚠️ H2H Error: {e}")
 
-        # 3. FORM
+        # 3. FORM ANALYSIS (Using 'shooting' stats as a proxy for performance)
         form_summary = "Data Unavailable"
         try:
+            # Fetch 'shooting' stats (shots, goals, xG) for the home team
             match_stats = self.scraper.read_team_match_stats(stat_type="shooting", team=home_team)
+            
             if not match_stats.empty:
+                # Calculate averages
                 avg_shots = match_stats['shooting']['Sh'].mean()
                 avg_goals = match_stats['shooting']['Gls'].mean()
-                form_summary = f"{home_team} Form: {avg_shots:.1f} shots/pg, {avg_goals:.1f} goals/pg."
+                avg_xg = match_stats['shooting']['xG'].mean() if 'xG' in match_stats['shooting'] else 0.0
+                
+                form_summary = (f"{home_team} Form: Avg {avg_shots:.1f} shots/game, "
+                                f"{avg_goals:.1f} goals/game, {avg_xg:.2f} xG/game.")
         except Exception as e:
-            pass
+            form_summary = "Form Data Unavailable (Connection issue or no games played)"
 
+        # 4. CONSTRUCT RETURN PACKET
         return {
-            "match_id": "Generated-ID",
+            "match_id": "Generated-ID",  # Scrapers don't have a simple Event ID like APIs
             "quantitative_features": {
                 "h2h_summary": h2h_summary,
                 "standings": standings_data,
-                "lineups": [],
-                "top_scorer": [],
+                "lineups": [], # Lineups are generally not available via scraper until post-match
+                "top_scorer": [], # Requires parsing 'standard' player stats (heavy operation)
                 "home_form": form_summary,
-                "tactical_setup": {"home_formation": "Unknown", "away_formation": "Unknown"},
+                "tactical_setup": {
+                    "home_formation": "Unknown",
+                    "away_formation": "Unknown",
+                },
             },
             "qualitative_context": {
                 "news_headlines": "News unavailable (Stats-only source)",
@@ -115,7 +122,3 @@ class SoccerDataLoader:
                 "referee": "Referee info in schedule"
             }
         }
-
-# --- CRITICAL FIX: INSTANTIATE THE OBJECT MAIN.PY EXPECTS ---
-# main.py expects to import 'real_data_loader' from this file.
-real_data_loader = SoccerDataLoader()
