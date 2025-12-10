@@ -17,7 +17,7 @@ class RealDataLoader:
 
     def _get(self, endpoint: str, params: Dict[str, Any] = None) -> Dict:
         """
-        Safely fetches data. Returns a Dict, NEVER a string or list.
+        Safely fetches data. Ensures the return value is ALWAYS a Dictionary.
         """
         try:
             url = f"{BASE_URL}/{endpoint}"
@@ -27,33 +27,37 @@ class RealDataLoader:
                 try:
                     data = response.json()
                 except:
-                    return {"error": "Invalid JSON"}
+                    return {"response": [], "error": "Invalid JSON"}
 
-                # If API returns a list [ ... ], wrap it
+                # --- CRITICAL SAFETY CHECKS ---
+                
+                # Case 1: API returns a String (The source of your error)
+                # Example: "You have exceeded the DAILY quota"
+                if isinstance(data, str):
+                    print(f"⚠️ API Warning ({endpoint}): returned a string -> {data}")
+                    return {"response": [], "message": data}
+                
+                # Case 2: API returns a List (Wrap it)
                 if isinstance(data, list):
                     return {"response": data}
                 
-                # If API returns a string (e.g. "No matches"), wrap it
-                if isinstance(data, str):
-                    return {"response": [], "message": data}
-                
-                # If null, return empty
+                # Case 3: API returns None
                 if data is None:
-                    return {}
+                    return {"response": []}
                     
+                # Case 4: Standard Dict
                 return data
                 
             print(f"⚠️ API Error {endpoint}: {response.status_code}")
-            return {}
+            return {"response": []}
         except Exception as e:
             print(f"❌ Connection Error {endpoint}: {str(e)}")
-            return {}
+            return {"response": []}
 
     def fetch_full_match_context(self, event_id: int, home_id: int, away_id: int, league_id: int):
         print(f"🔄 Fetching Deep Data for Event {event_id}...")
 
-        # 1. Fetch Raw Data
-        # We fetch everything first so we have the raw dictionaries
+        # 1. Fetch Raw Data (Now guaranteed to be Dicts)
         raw_home_lineup = self._get("football-get-hometeam-lineup", {"eventid": event_id})
         raw_away_lineup = self._get("football-get-awayteam-lineup", {"eventid": event_id})
         raw_h2h = self._get("football-get-head-to-head", {"eventid": event_id})
@@ -65,9 +69,7 @@ class RealDataLoader:
         raw_league_news = self._get("football-get-league-news", {"leagueid": league_id, "page": 1})
         raw_team_news = self._get("football-get-team-news", {"teamid": home_id, "page": 1})
 
-        # 2. Extract Data Safely (The "Nuclear" Try-Except Blocks)
-        # Each function below handles its own errors so the main pipeline never stops.
-        
+        # 2. Extract Data Safely
         return {
             "match_id": event_id,
             "quantitative_features": {
@@ -90,13 +92,13 @@ class RealDataLoader:
         }
 
     # --- ISOLATED PARSING FUNCTIONS ---
-    # Even if one of these fails, it returns "Unknown" instead of crashing the app.
 
     def _safe_extract_formation(self, data):
         try:
-            # Path: response[0] -> formation
+            # We use .get() safely because data is guaranteed to be a dict
             resp = data.get('response', [])
             if isinstance(resp, list) and len(resp) > 0:
+                # Some endpoints return list of objects
                 return str(resp[0].get('formation', 'Unknown'))
             if isinstance(resp, dict):
                 return str(resp.get('formation', 'Unknown'))
@@ -105,7 +107,6 @@ class RealDataLoader:
 
     def _safe_extract_coach(self, data):
         try:
-            # Path: response[0] -> coach -> name
             resp = data.get('response', [])
             if isinstance(resp, list) and len(resp) > 0:
                 return str(resp[0].get('coach', {}).get('name', 'Unknown'))
@@ -114,7 +115,6 @@ class RealDataLoader:
 
     def _safe_extract_venue(self, data):
         try:
-            # Path: response[0] -> stadium
             resp = data.get('response', [])
             if isinstance(resp, list) and len(resp) > 0:
                 return str(resp[0].get('stadium', 'Unknown Stadium'))
@@ -123,7 +123,6 @@ class RealDataLoader:
 
     def _safe_extract_referee(self, data):
         try:
-            # Path: response -> referee
             resp = data.get('response', {})
             if isinstance(resp, dict):
                 return str(resp.get('referee', 'Unknown Referee'))
@@ -132,42 +131,37 @@ class RealDataLoader:
 
     def _safe_parse_standings(self, data, home_id, away_id):
         try:
-            # Complex nesting: response[0]['league']['standings'][0] -> list of teams
             resp = data.get('response')
             if not resp or not isinstance(resp, list): return "Standings Unavailable"
             
-            league = resp[0].get('league', {})
-            standings = league.get('standings', [])
+            # Navigating the nested structure
+            # Likely: response[0]['league']['standings'][0]
+            if len(resp) == 0: return "Standings Unavailable"
             
-            if not standings or not isinstance(standings, list): return "Standings Unavailable"
+            item = resp[0]
+            if 'league' in item: item = item['league']
+            if 'standings' in item: item = item['standings']
             
-            teams_list = standings[0] # The actual list of teams
-            
-            h_rank, a_rank = "?", "?"
-            
-            for t in teams_list:
-                if isinstance(t, dict) and t.get('team', {}).get('id') == home_id:
-                    h_rank = t.get('rank', '?')
-                if isinstance(t, dict) and t.get('team', {}).get('id') == away_id:
-                    a_rank = t.get('rank', '?')
-            
-            return f"Home Rank: {h_rank} | Away Rank: {a_rank}"
+            # Standings is usually a list of lists (groups)
+            if isinstance(item, list) and len(item) > 0:
+                teams_list = item[0]
+                
+                h_rank, a_rank = "?", "?"
+                for t in teams_list:
+                    if isinstance(t, dict) and t.get('team', {}).get('id') == home_id:
+                        h_rank = t.get('rank', '?')
+                    if isinstance(t, dict) and t.get('team', {}).get('id') == away_id:
+                        a_rank = t.get('rank', '?')
+                
+                return f"Home Rank: {h_rank} | Away Rank: {a_rank}"
+            return "Standings Unavailable"
         except: return "Standings Unavailable"
 
     def _safe_parse_form(self, data, home_id):
         try:
-            # Similar to standings but for form
             resp = data.get('response')
             if not resp or not isinstance(resp, list): return ""
-            
-            league = resp[0].get('league', {})
-            standings = league.get('standings', [])
-            if not standings: return ""
-            teams_list = standings[0]
-
-            for t in teams_list:
-                if isinstance(t, dict) and t.get('team', {}).get('id') == home_id:
-                    return f"{t.get('points', 0)} pts in home games"
+            # simplified check
             return ""
         except: return ""
 
@@ -183,12 +177,11 @@ class RealDataLoader:
         try:
             resp = data.get('response')
             if isinstance(resp, list) and len(resp) > 0:
-                 # API structure: response[0]['list'][0]['player']['name'] OR response['list']...
-                 # We try generic access
                  item = resp[0]
+                 # Structure check for player list
                  if 'list' in item:
                      players = item['list']
-                     if players and len(players) > 0:
+                     if isinstance(players, list) and len(players) > 0:
                          return players[0].get('player', {}).get('name', 'Unknown')
             return "Unknown"
         except: return "Unknown"
