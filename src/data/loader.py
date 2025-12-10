@@ -1,12 +1,13 @@
 import requests
 import os
 import json
-from typing import Dict, Any, List
+from datetime import datetime
+from typing import Dict, Any, List, Union
 
 # --- CONFIGURATION ---
 API_KEY = os.getenv("RAPIDAPI_KEY", "60edfa019emshc63513f3ead9a39p154a49jsn49afa8723b29")
-API_HOST = "free-api-live-football-data.p.rapidapi.com"
-BASE_URL = "https://free-api-live-football-data.p.rapidapi.com"
+API_HOST = "english-premiere-league1.p.rapidapi.com"
+BASE_URL = "https://english-premiere-league1.p.rapidapi.com"
 
 class RealDataLoader:
     def __init__(self):
@@ -28,116 +29,137 @@ class RealDataLoader:
             print(f"❌ Connection Error {endpoint}: {str(e)}")
             return {}
 
-    def fetch_full_match_context(self, event_id: int, home_id: int, away_id: int, league_id: int):
+    def _ensure_dict(self, data: Union[Dict, List]) -> Dict:
         """
-        Aggregates data from 14+ endpoints to feed the W-5 AI Engine.
+        CRITICAL FIX: Converts a List to a Dict if the API returns [ {} ].
+        If it's already a Dict, returns it as is.
+        If empty, returns {}.
         """
-        print(f"🔄 Fetching Deep Data for Event {event_id}...")
+        if isinstance(data, list):
+            if len(data) > 0:
+                return data[0] # Take the first item
+            return {}
+        return data
 
-        # --- 1. TACTICAL & LINEUPS (Crucial for Tactician Agent) ---
-        home_lineup = self._get("football-get-hometeam-lineup", {"eventid": event_id})
-        away_lineup = self._get("football-get-awayteam-lineup", {"eventid": event_id})
-
-        # --- 2. HISTORICAL CONTEXT (Crucial for Statistician Agent) ---
-        h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
-        standing_all = self._get("football-get-standing-all", {"leagueid": league_id})
-        standing_home = self._get("football-get-standing-home", {"leagueid": league_id})
-        trophies = self._get("football-get-trophies-all-seasons", {"leagueid": league_id})
-
-        # --- 3. MATCH SPECIFICS ---
-        details = self._get("football-get-match-detail", {"eventid": event_id})
-        location = self._get("football-get-match-location", {"eventid": event_id})
-        stats = self._get("football-get-match-event-all-stats", {"eventid": event_id})
-
-        # --- 4. PLAYER INTELLIGENCE (Crucial for Sentiment Agent) ---
-        top_goals = self._get("football-get-top-players-by-goals", {"leagueid": league_id})
-        top_rated = self._get("football-get-top-players-by-rating", {"leagueid": league_id})
+    def fetch_full_match_context(self, home_id: int, away_id: int, home_name: str, away_name: str):
+        """
+        Aggregates data using the English Premier League API.
+        """
+        print(f"🔄 Fetching EPL Data for {home_name} vs {away_name}...")
         
-        # --- 5. NEWS & BUZZ ---
-        league_news = self._get("football-get-league-news", {"leagueid": league_id, "page": 1})
-        team_news = self._get("football-get-team-news", {"teamid": home_id, "page": 1})
+        current_year = datetime.now().year
+        season_year = current_year if datetime.now().month > 7 else current_year - 1
 
-        # --- BUILD THE PROMPT PACKET ---
+        # --- 1. TEAM INTELLIGENCE ---
+        # Get raw data
+        home_results = self._get("team/results", {"teamId": home_id})
+        away_results = self._get("team/results", {"teamId": away_id})
+        
+        # FIX: The scoring/info endpoints often return Lists, so we sanitize them
+        home_scoring = self._ensure_dict(self._get("team/statistic/scoring", {"teamId": home_id}))
+        away_scoring = self._ensure_dict(self._get("team/statistic/scoring", {"teamId": away_id}))
+        home_info = self._ensure_dict(self._get("team/info", {"teamId": home_id}))
+        
+        # --- 2. LEAGUE CONTEXT ---
+        scoreboard = self._get("scoreboard", {"year": season_year})
+        all_injuries = self._get("injuries")
+        news_feed = self._get("news")
+
+        # --- BUILD THE W-5 DATA PACKET ---
         return {
-            "match_id": event_id,
+            "match_id": f"{home_id}-{away_id}",
             "quantitative_features": {
-                "standings": self._parse_standings(standing_all, home_id, away_id),
-                "home_form_context": self._parse_home_form(standing_home, home_id),
-                "h2h_history": self._parse_h2h(h2h_data),
-                "tactical_setup": {
-                    "home_formation": self._extract_formation(home_lineup),
-                    "away_formation": self._extract_formation(away_lineup),
-                    "home_coach": self._extract_coach(home_lineup),
-                    "away_coach": self._extract_coach(away_lineup)
-                },
-                "key_threats": self._extract_top_list(top_goals, 'goals')
+                "standings_context": self._parse_standings(scoreboard, home_name, away_name),
+                "home_form": self._parse_recent_results(home_results),
+                "away_form": self._parse_recent_results(away_results),
+                "scoring_stats": {
+                    "home_attack": self._extract_scoring_stat(home_scoring),
+                    "away_attack": self._extract_scoring_stat(away_scoring)
+                }
             },
             "qualitative_context": {
-                "venue": location.get('response', {}).get('stadium', 'Unknown Stadium'),
-                "referee": details.get('response', {}).get('referee', 'Unknown Referee'),
-                "trophy_pedigree": self._parse_trophies(trophies, home_id, away_id),
-                "news_headlines": self._merge_news(league_news, team_news),
-                "star_ratings": self._extract_top_list(top_rated, 'rating')
+                "injuries": self._filter_injuries(all_injuries, home_name, away_name),
+                "recent_news": self._summarize_news(news_feed),
+                # FIX: Now safe to use .get because we ran _ensure_dict
+                "venue_info": home_info.get('venue', {}).get('name', 'Unknown Stadium')
             }
         }
 
     # --- PARSING HELPERS ---
 
-    def _extract_formation(self, data):
-        try: return data.get('response', {}).get('formation', 'Unknown')
-        except: return "Unknown"
-
-    def _extract_coach(self, data):
-        try: return data.get('response', {}).get('coach', {}).get('name', 'Unknown')
-        except: return "Unknown"
-
-    def _parse_standings(self, data, home_id, away_id):
+    def _parse_standings(self, data, home_name, away_name):
         try:
-            table = data.get('response', {}).get('standings', [])
-            # Handle different API structures (sometimes nested lists)
-            if table and isinstance(table[0], list): table = table[0]
+            # Scoreboard is usually a list of team dicts
+            teams = data if isinstance(data, list) else data.get('standings', [])
             
-            h_rank = next((t for t in table if t['team']['id'] == home_id), None)
-            a_rank = next((t for t in table if t['team']['id'] == away_id), None)
+            # Helper to find rank safely
+            def find_rank(name):
+                for t in teams:
+                    # Check nested structure often found in football APIs
+                    t_name = t.get('team', {}).get('name', '')
+                    if not t_name: t_name = t.get('teamName', '')
+                    
+                    if name.lower() in t_name.lower():
+                        return t.get('rank', 'N/A')
+                return "N/A"
+
+            h_rank = find_rank(home_name)
+            a_rank = find_rank(away_name)
             
-            summary = []
-            if h_rank: summary.append(f"Home Rank: {h_rank.get('rank')} ({h_rank.get('points')} pts)")
-            if a_rank: summary.append(f"Away Rank: {a_rank.get('rank')} ({a_rank.get('points')} pts)")
-            return " | ".join(summary)
-        except: return "Standings Unavailable"
+            return f"Home Rank: {h_rank} | Away Rank: {a_rank}"
+        except:
+            return "Standings parsing failed."
 
-    def _parse_home_form(self, data, home_id):
+    def _parse_recent_results(self, data):
         try:
-            table = data.get('response', {}).get('standings', [])
-            if table and isinstance(table[0], list): table = table[0]
-            stats = next((t for t in table if t['team']['id'] == home_id), None)
-            if stats: return f"Home Games: {stats.get('points')} pts (Rank {stats.get('rank')})"
-            return ""
-        except: return ""
+            # Expecting a list of matches
+            if not isinstance(data, list): return "No recent form data."
+            
+            matches = data[:5]
+            form = []
+            for m in matches:
+                # Handle different API keys for scores
+                h_score = m.get('homeScore', m.get('goalsHomeTeam', '?'))
+                a_score = m.get('awayScore', m.get('goalsAwayTeam', '?'))
+                form.append(f"{h_score}-{a_score}")
+            return "Last 5 scores: " + ", ".join(form)
+        except:
+            return "Recent form unavailable."
 
-    def _parse_h2h(self, data):
+    def _extract_scoring_stat(self, data):
         try:
-            matches = data.get('response', [])
-            return f"{len(matches)} recent meetings found."
-        except: return "No H2H data."
+            # Data is already ensured to be a dict
+            goals = data.get('goals', data.get('total', 'N/A'))
+            return f"Goals: {goals} (Season)"
+        except:
+            return "N/A"
 
-    def _extract_top_list(self, data, key):
+    def _filter_injuries(self, injuries_data, home_name, away_name):
+        relevant = []
         try:
-            players = data.get('response', {}).get('list', [])[:3]
-            return [f"{p['player']['name']} ({p.get(key,0)} {key})" for p in players]
-        except: return []
+            # Injuries usually come as a list
+            if not isinstance(injuries_data, list): return "No injury data."
 
-    def _parse_trophies(self, data, home_id, away_id):
-        return "Historical trophy data loaded."
+            for player in injuries_data:
+                # Safely dig for team name
+                team = player.get('team', {}).get('name', '')
+                if home_name in team or away_name in team:
+                    status = player.get('status', 'Injured')
+                    p_name = player.get('name', 'Unknown')
+                    relevant.append(f"{p_name} ({team}): {status}")
+            
+            if not relevant: return "No major injuries reported."
+            return "; ".join(relevant[:5])
+        except:
+            return "Injury parsing error."
 
-    def _merge_news(self, league, team):
-        headlines = []
+    def _summarize_news(self, news_data):
         try:
-            l_news = league.get('response', {}).get('news', [])[:2]
-            t_news = team.get('response', {}).get('news', [])[:2]
-            headlines.extend([n.get('title') for n in l_news])
-            headlines.extend([n.get('title') for n in t_news])
-        except: pass
-        return "; ".join(headlines)
+            if not isinstance(news_data, list): return "No news."
+            headlines = [n.get('title') for n in news_data[:3] if n.get('title')]
+            return ". ".join(headlines)
+        except:
+            return "No recent news."
 
+# Global instance
 real_data_loader = RealDataLoader()
