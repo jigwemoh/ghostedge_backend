@@ -5,6 +5,7 @@ import numpy as np
 class ConsensusEngine:
     def __init__(self, debate_rounds: int = 2, min_agents: int = 3):
         self.debate_rounds = debate_rounds
+        # We explicitly use 'provider' here to match the class definition
         self.agents = [
             LLMAgent('statistician', provider='openai'),
             LLMAgent('tactician', provider='openai'),
@@ -63,17 +64,21 @@ class ConsensusEngine:
 
     def _calculate_agreement(self, results):
         # Calculate standard deviation of the Home Win probability
-        home_probs = [r.get('home_win') for r in results]
+        # Use a safe default if missing
+        home_probs = [r.get('home_win', 0.33) for r in results]
         std_dev = np.std(home_probs)
         # Low variance = High agreement. Scale 0-1.
         return max(0, 1.0 - (std_dev * 2))
 
     def _generate_summary(self, results, final_pred):
-        winner = max(final_pred, key=final_pred.get).replace('_', ' ').title()
-        prob = final_pred[max(final_pred, key=final_pred.get)]
-        
-        summary = f"VERDICT: {winner} ({prob:.0%})\n\n"
-        for res in results:
-            summary += f"• {res['agent'].title()}: {res['reasoning']}\n"
+        try:
+            winner = max(final_pred, key=final_pred.get).replace('_', ' ').title()
+            prob = final_pred[max(final_pred, key=final_pred.get)]
             
-        return summary
+            summary = f"VERDICT: {winner} ({prob:.0%})\n\n"
+            for res in results:
+                summary += f"• {res['agent'].title()}: {res.get('reasoning', 'No reasoning provided')}\n"
+            
+            return summary
+        except Exception as e:
+            return "Summary generation failed."

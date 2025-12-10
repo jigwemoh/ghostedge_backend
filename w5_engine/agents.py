@@ -1,11 +1,15 @@
 import os
 from typing import Dict, Any
 import json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class LLMAgent:
-    def __init__(self, persona_type: str, llm_provider: str = 'openai', model_name: str = 'gpt-4'):
+    # We standardized the parameter name to 'provider' here
+    def __init__(self, persona_type: str, provider: str = 'openai', model_name: str = 'gpt-4'):
         self.persona = persona_type
-        self.provider = llm_provider
+        self.provider = provider
         self.model = model_name
         self.client = self._init_client()
 
@@ -73,6 +77,13 @@ class LLMAgent:
         stats = data.get("quantitative_features", {})
         context = data.get("qualitative_context", {})
         
+        # Safely get list items or default strings
+        top_scorers = stats.get('key_threats', {}).get('top_scorers', [])
+        if isinstance(top_scorers, list):
+            top_scorers_str = ', '.join(top_scorers)
+        else:
+            top_scorers_str = str(top_scorers)
+
         return f"""
         MATCH: {data.get('home_team')} vs {data.get('away_team')}
         
@@ -80,7 +91,7 @@ class LLMAgent:
         - Standings: {stats.get('standings_context', 'N/A')}
         - H2H History: {stats.get('h2h_summary', 'N/A')}
         - Home Advantage: {stats.get('home_advantage_context', 'N/A')}
-        - Top Scorers: {', '.join(stats.get('key_threats', {}).get('top_scorers', []))}
+        - Top Scorers: {top_scorers_str}
         
         === QUALITATIVE DATA (The Context) ===
         - Venue: {context.get('venue', 'Unknown')}
@@ -112,15 +123,15 @@ class LLMAgent:
                 )
                 return resp.choices[0].message.content
             
-            # (Add Anthropic/Google blocks here if needed, keeping OpenAI as default for now)
+            # Placeholder for other providers
             return "{}" 
         except Exception as e:
             print(f"❌ LLM Error: {e}")
-            return '{"home_win": 0.33, "draw": 0.33, "away_win": 0.33, "confidence": 0, "reasoning": "Error"}'
+            # Return a valid JSON string as fallback so the app doesn't crash
+            return '{"home_win": 0.33, "draw": 0.34, "away_win": 0.33, "confidence": 0, "reasoning": "Error calling AI provider"}'
 
     def _parse_json(self, text):
         try:
             return json.loads(text)
         except:
-            # Fallback if LLM returns bad JSON
-            return {"home_win": 0.34, "draw": 0.33, "away_win": 0.33, "confidence": 0.1, "reasoning": "Parse Error", "agent": self.persona}
+            return {"home_win": 0.33, "draw": 0.34, "away_win": 0.33, "confidence": 0.1, "reasoning": "JSON Parse Error", "agent": self.persona}
