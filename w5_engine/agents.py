@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class LLMAgent:
-    # We standardized the parameter name to 'provider' here
-    def __init__(self, persona_type: str, provider: str = 'openai', model_name: str = 'gpt-4'):
+    # CHANGE 1: Switched default model to 'gpt-4o-mini' for better availability/speed
+    def __init__(self, persona_type: str, provider: str = 'openai', model_name: str = 'gpt-4o-mini'):
         self.persona = persona_type
         self.provider = provider
         self.model = model_name
@@ -17,7 +17,11 @@ class LLMAgent:
         # Initialize clients based on provider
         if self.provider == 'openai':
             from openai import OpenAI
-            return OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+            # Ensure the key is grabbed correctly
+            api_key = os.getenv('OPENAI_API_KEY')
+            if not api_key:
+                print(f"⚠️ Agent {self.persona}: OPENAI_API_KEY not found in env.")
+            return OpenAI(api_key=api_key)
         elif self.provider == 'anthropic':
             from anthropic import Anthropic
             return Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
@@ -115,6 +119,9 @@ class LLMAgent:
         """Safe wrapper to call different LLM providers."""
         try:
             if self.provider == 'openai':
+                if not self.client:
+                    raise ValueError("OpenAI Client not initialized (check API Key)")
+                    
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
@@ -126,9 +133,19 @@ class LLMAgent:
             # Placeholder for other providers
             return "{}" 
         except Exception as e:
-            print(f"❌ LLM Error: {e}")
-            # Return a valid JSON string as fallback so the app doesn't crash
-            return '{"home_win": 0.33, "draw": 0.34, "away_win": 0.33, "confidence": 0, "reasoning": "Error calling AI provider"}'
+            # CHANGE 2: Print actual error to console AND include it in the return
+            error_msg = str(e)
+            print(f"❌ LLM Error ({self.persona}): {error_msg}")
+            
+            # Return a valid JSON string with the error message so you can see it in the UI
+            fallback_json = json.dumps({
+                "home_win": 0.33, 
+                "draw": 0.34, 
+                "away_win": 0.33, 
+                "confidence": 0, 
+                "reasoning": f"AI Failure: {error_msg}"
+            })
+            return fallback_json
 
     def _parse_json(self, text):
         try:
