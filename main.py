@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 
 # 1. FORCE LOAD ENVIRONMENT VARIABLES
-# This must happen immediately so the AI agents can find your API keys.
+# This loads keys from the .env file automatically
 load_dotenv()
 
 # 2. DEBUG: VERIFY KEYS ARE LOADED
@@ -10,9 +10,10 @@ openai_key = os.getenv("OPENAI_API_KEY")
 rapid_key = os.getenv("RAPIDAPI_KEY")
 
 if openai_key:
+    # We print only the first 5 chars to avoid leaking it in logs
     print(f"✅ SYSTEM: OpenAI Key loaded (Starts with {openai_key[:5]}...)")
 else:
-    print("❌ ERROR: OpenAI Key is MISSING. The AI Debate will fail.")
+    print("❌ ERROR: OpenAI Key is MISSING. Check your .env file.")
 
 if rapid_key:
     print(f"✅ SYSTEM: RapidAPI Key loaded.")
@@ -32,7 +33,6 @@ from w5_engine.debate import ConsensusEngine
 app = FastAPI()
 
 # 4. CORS SETUP
-# This allows your Lovable/React frontend to talk to this Python backend.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,50 +46,41 @@ app.add_middleware(
 def health_check():
     return {
         "status": "GhostEdge AI is Online", 
-        "mode": "Event-Centric (Free API)", 
-        "version": "3.0"
+        "mode": "Event-Centric (SoccerData/FBref)", 
+        "version": "3.1"
     }
 
 # 6. DATA MODEL
-# This matches the JSON payload sent from your Lovable Frontend.
 class MatchRequest(BaseModel):
-    event_id: int          # CRITICAL: This connects to the Free Live API
+    event_id: int          # Kept for frontend compatibility
     home_team_id: int
     away_team_id: int
     league_id: int
-    home_team_name: str
-    away_team_name: str
+    home_team_name: str    # CRITICAL: We now use this for data fetching
+    away_team_name: str    # CRITICAL: We now use this for data fetching
 
 # 7. ANALYSIS ENDPOINT (POST /analyze/consensus)
 @app.post("/analyze/consensus")
 async def run_consensus(match: MatchRequest):
     try:
-        print(f"👻 GhostEdge Analyzing: {match.home_team_name} vs {match.away_team_name} (Event {match.event_id})...")
+        print(f"👻 GhostEdge Analyzing: {match.home_team_name} vs {match.away_team_name}...")
 
         # --- STEP A: FETCH REAL DATA ---
-        # We call the loader using the 'event_id' which gives us the deep data (lineups, h2h, etc.)
         match_context = real_data_loader.fetch_full_match_context(
-            event_id=match.event_id,
-            home_id=match.home_team_id,
-            away_id=match.away_team_id,
-            league_id=match.league_id
+            home_team=match.home_team_name,
+            away_team=match.away_team_name
         )
 
         # --- STEP B: PREPARE DATA FOR AI AGENTS ---
-        # The W-5 Engine expects a dictionary with 'quantitative' and 'qualitative' buckets.
-        # We convert the qualitative dict to a string so the LLM can read it as a text narrative.
         agent_data_packet = {
             "home_team": match.home_team_name,
             "away_team": match.away_team_name,
-            "quantitative_features": match_context['quantitative_features'],
-            "qualitative_context": str(match_context['qualitative_context'])
+            "quantitative_features": match_context.get('quantitative_features', {}),
+            "qualitative_context": str(match_context.get('qualitative_context', {}))
         }
 
         # --- STEP C: RUN THE W-5 DEBATE ENGINE ---
-        # Initialize the debate (3 agents: Statistician, Tactician, Sentiment)
         engine = ConsensusEngine(debate_rounds=2, min_agents=3)
-        
-        # Run the consensus logic
         result = engine.run_consensus(agent_data_packet)
 
         # --- STEP D: RETURN RESULT TO FRONTEND ---
@@ -98,13 +89,9 @@ async def run_consensus(match: MatchRequest):
             "confidence": result['confidence'],
             "agreement_score": result.get('agreement_score', 0.5),
             "debate_summary": result['debate_summary'],
-            "match_data_used": match_context # Returning this helps you debug the UI
+            "match_data_used": match_context
         }
 
     except Exception as e:
         print(f"❌ SERVER ERROR: {str(e)}")
-        # Return a 500 error so the frontend knows to show an error message
         raise HTTPException(status_code=500, detail=str(e))
-
-# Run command reminder:
-# python -m uvicorn main:app --reload
