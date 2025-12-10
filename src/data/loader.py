@@ -15,174 +15,146 @@ class RealDataLoader:
             "x-rapidapi-key": API_KEY
         }
 
-    def _get(self, endpoint: str, params: Dict[str, Any] = None):
-        """Helper to fire requests safely"""
+    def _get(self, endpoint: str, params: Dict[str, Any] = None) -> Dict:
+        """
+        CRITICAL FIX: Always returns a Dictionary, even if API gives a List.
+        """
         try:
             url = f"{BASE_URL}/{endpoint}"
             response = requests.get(url, headers=self.headers, params=params, timeout=10)
+            
             if response.status_code == 200:
-                return response.json()
+                data = response.json()
+                
+                # FIX 1: If API returns a top-level list, wrap it
+                if isinstance(data, list):
+                    return {"response": data}
+                
+                # FIX 2: If API returns empty or null, return empty dict
+                if data is None:
+                    return {}
+                    
+                return data
+                
             print(f"⚠️ API Error {endpoint}: {response.status_code}")
             return {}
         except Exception as e:
             print(f"❌ Connection Error {endpoint}: {str(e)}")
             return {}
 
-    def _safe_get(self, data: Any, key: str, default=None):
+    def _safe_extract(self, data: Dict, keys: List[str], default="Unknown"):
         """
-        CRITICAL FIX: Safely extracts a key whether 'data' is a Dict or a List.
+        Safely digs through nested JSON without crashing.
+        Usage: _safe_extract(data, ['response', 0, 'coach', 'name'])
         """
         try:
-            # If it's a list (e.g., response: [{...}]), grab the first item
-            if isinstance(data, list):
-                if len(data) > 0:
-                    data = data[0]
-                else:
+            current = data
+            for key in keys:
+                if isinstance(current, dict):
+                    current = current.get(key)
+                elif isinstance(current, list):
+                    # If looking for index (int)
+                    if isinstance(key, int):
+                        if len(current) > key:
+                            current = current[key]
+                        else:
+                            return default
+                    else:
+                        # If list but key is string, try first item
+                        if len(current) > 0:
+                            current = current[0].get(key)
+                        else:
+                            return default
+                
+                if current is None:
                     return default
-            
-            # Now treat it as a dictionary
-            if isinstance(data, dict):
-                return data.get(key, default)
-            
-            return default
+            return current
         except:
             return default
 
     def fetch_full_match_context(self, event_id: int, home_id: int, away_id: int, league_id: int):
         print(f"🔄 Fetching Deep Data for Event {event_id}...")
 
-        # --- 1. TACTICAL & LINEUPS ---
+        # --- FETCH RAW DATA ---
         home_lineup = self._get("football-get-hometeam-lineup", {"eventid": event_id})
         away_lineup = self._get("football-get-awayteam-lineup", {"eventid": event_id})
-
-        # --- 2. HISTORICAL CONTEXT ---
         h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
         standing_all = self._get("football-get-standing-all", {"leagueid": league_id})
         standing_home = self._get("football-get-standing-home", {"leagueid": league_id})
-        trophies = self._get("football-get-trophies-all-seasons", {"leagueid": league_id})
-
-        # --- 3. MATCH SPECIFICS ---
         details = self._get("football-get-match-detail", {"eventid": event_id})
         location = self._get("football-get-match-location", {"eventid": event_id})
-        stats = self._get("football-get-match-event-all-stats", {"eventid": event_id})
-
-        # --- 4. PLAYER INTELLIGENCE ---
         top_goals = self._get("football-get-top-players-by-goals", {"leagueid": league_id})
-        top_rated = self._get("football-get-top-players-by-rating", {"leagueid": league_id})
-        
-        # --- 5. NEWS & BUZZ ---
         league_news = self._get("football-get-league-news", {"leagueid": league_id, "page": 1})
         team_news = self._get("football-get-team-news", {"teamid": home_id, "page": 1})
 
-        # --- BUILD THE PROMPT PACKET ---
+        # --- BUILD PACKET SAFEGUARDS ---
         return {
             "match_id": event_id,
             "quantitative_features": {
                 "standings": self._parse_standings(standing_all, home_id, away_id),
-                "home_form_context": self._parse_home_form(standing_home, home_id),
-                "h2h_history": self._parse_h2h(h2h_data),
+                "home_form": self._parse_form(standing_home, home_id),
+                "h2h_summary": f"{len(h2h_data.get('response', []))} recent meetings.",
                 "tactical_setup": {
-                    "home_formation": self._extract_formation(home_lineup),
-                    "away_formation": self._extract_formation(away_lineup),
-                    "home_coach": self._extract_coach(home_lineup),
-                    "away_coach": self._extract_coach(away_lineup)
+                    "home_formation": self._safe_extract(home_lineup, ['response', 0, 'formation']),
+                    "away_formation": self._safe_extract(away_lineup, ['response', 0, 'formation']),
+                    "home_coach": self._safe_extract(home_lineup, ['response', 0, 'coach', 'name']),
+                    "away_coach": self._safe_extract(away_lineup, ['response', 0, 'coach', 'name'])
                 },
-                "key_threats": self._extract_top_list(top_goals, 'goals')
+                "top_scorer": self._safe_extract(top_goals, ['response', 'list', 0, 'player', 'name'])
             },
             "qualitative_context": {
-                "venue": self._extract_venue(location),
-                "referee": self._extract_referee(details),
-                "trophy_pedigree": self._parse_trophies(trophies, home_id, away_id),
-                "news_headlines": self._merge_news(league_news, team_news),
-                "star_ratings": self._extract_top_list(top_rated, 'rating')
+                "venue": self._safe_extract(location, ['response', 0, 'stadium']),
+                "referee": self._safe_extract(details, ['response', 'referee']),
+                "news_headlines": self._merge_news(league_news, team_news)
             }
         }
 
-    # --- ROBUST PARSING HELPERS ---
-
-    def _extract_formation(self, data):
-        # Uses _safe_get to prevent the "list has no attribute get" error
-        response = data.get('response')
-        return self._safe_get(response, 'formation', 'Unknown')
-
-    def _extract_coach(self, data):
-        response = data.get('response')
-        # Handle nested list: response[0]['coach']['name']
-        coach_data = self._safe_get(response, 'coach', {})
-        return coach_data.get('name', 'Unknown')
-
-    def _extract_venue(self, data):
-        response = data.get('response')
-        return self._safe_get(response, 'stadium', 'Unknown Stadium')
-
-    def _extract_referee(self, data):
-        response = data.get('response')
-        return self._safe_get(response, 'referee', 'Unknown Referee')
+    # --- PARSING HELPERS ---
 
     def _parse_standings(self, data, home_id, away_id):
         try:
-            response = data.get('response')
-            # Standings are notoriously nested lists
-            if isinstance(response, list) and len(response) > 0:
-                # Sometimes it's response[0]['league']['standings'][0]
-                # We try to find the list of teams
-                standings = response[0].get('standings', [])
-                if standings and isinstance(standings[0], list):
-                    standings = standings[0] # Flatten the group array
-                
-                h_rank = next((t for t in standings if t['team']['id'] == home_id), None)
-                a_rank = next((t for t in standings if t['team']['id'] == away_id), None)
-                
-                summary = []
-                if h_rank: summary.append(f"Home Rank: {h_rank.get('rank')} ({h_rank.get('points')} pts)")
-                if a_rank: summary.append(f"Away Rank: {a_rank.get('rank')} ({a_rank.get('points')} pts)")
-                return " | ".join(summary)
-            return "Standings Unavailable"
-        except: return "Standings Unavailable"
+            # Safely navigate to standings list
+            # usually: response[0]['league']['standings'][0] -> list of teams
+            resp = data.get('response', [])
+            if not resp: return "N/A"
+            
+            # Navigate nested structure
+            if isinstance(resp, list): resp = resp[0]
+            if 'league' in resp: resp = resp['league']
+            if 'standings' in resp: resp = resp['standings']
+            if isinstance(resp, list) and len(resp) > 0 and isinstance(resp[0], list): resp = resp[0]
 
-    def _parse_home_form(self, data, home_id):
+            h_rank = next((t.get('rank') for t in resp if t.get('team', {}).get('id') == home_id), "?")
+            a_rank = next((t.get('rank') for t in resp if t.get('team', {}).get('id') == away_id), "?")
+            return f"Home Rank: {h_rank} | Away Rank: {a_rank}"
+        except:
+            return "Standings Unavailable"
+
+    def _parse_form(self, data, home_id):
         try:
-            # Reusing basic logic, assuming similar structure to standings
-            return "" 
+            resp = data.get('response', [])
+            if not resp: return "N/A"
+            if isinstance(resp, list): resp = resp[0]
+            if 'league' in resp: resp = resp['league']
+            if 'standings' in resp: resp = resp['standings']
+            if isinstance(resp, list) and len(resp) > 0 and isinstance(resp[0], list): resp = resp[0]
+            
+            stats = next((t for t in resp if t.get('team', {}).get('id') == home_id), None)
+            if stats: return f"{stats.get('points', 0)} pts in home games"
+            return ""
         except: return ""
 
-    def _parse_h2h(self, data):
-        try:
-            matches = data.get('response', [])
-            if isinstance(matches, list):
-                return f"{len(matches)} recent meetings found."
-            return "No H2H data."
-        except: return "No H2H data."
-
-    def _extract_top_list(self, data, key):
-        try:
-            response = data.get('response')
-            # response could be a dict or list
-            if isinstance(response, list): response = response[0] if response else {}
-            
-            players = response.get('list', [])[:3]
-            return [f"{p['player']['name']} ({p.get(key,0)} {key})" for p in players]
-        except: return []
-
-    def _parse_trophies(self, data, home_id, away_id):
-        return "Historical trophy data loaded."
-
     def _merge_news(self, league, team):
-        headlines = []
         try:
-            # League News
-            l_resp = league.get('response')
-            if isinstance(l_resp, list): l_resp = l_resp[0] if l_resp else {}
-            l_news = l_resp.get('news', [])[:2]
+            l = self._safe_extract(league, ['response', 'news'], []) or []
+            t = self._safe_extract(team, ['response', 'news'], []) or []
+            # Ensure they are lists
+            if not isinstance(l, list): l = []
+            if not isinstance(t, list): t = []
             
-            # Team News
-            t_resp = team.get('response')
-            if isinstance(t_resp, list): t_resp = t_resp[0] if t_resp else {}
-            t_news = t_resp.get('news', [])[:2]
-
-            headlines.extend([n.get('title') for n in l_news if n.get('title')])
-            headlines.extend([n.get('title') for n in t_news if n.get('title')])
-        except: pass
-        return "; ".join(headlines)
+            titles = [x.get('title') for x in l[:2] if isinstance(x, dict)] + \
+                     [x.get('title') for x in t[:2] if isinstance(x, dict)]
+            return "; ".join(titles) if titles else "No major news."
+        except: return "News Unavailable"
 
 real_data_loader = RealDataLoader()
