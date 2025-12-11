@@ -1,3 +1,6 @@
+import sys
+# Add the path where you KNOW soccerdata is installed
+sys.path.append("/Users/igwemoh/.pyenv/versions/3.11.13/lib/python3.11/site-packages")
 import os
 import json
 import logging
