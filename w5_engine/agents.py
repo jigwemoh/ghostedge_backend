@@ -14,6 +14,10 @@ class LLMAgent:
 
     def _init_client(self):
         """Initialize clients based on provider."""
+        # 'soccerdata' provider needs no client, it uses logic.
+        if self.provider == 'soccerdata':
+            return None
+
         if self.provider == 'openai':
             from openai import OpenAI
             api_key = os.getenv('OPENAI_API_KEY')
@@ -23,43 +27,87 @@ class LLMAgent:
         
         elif self.provider == 'anthropic':
             from anthropic import Anthropic
-            return Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
-        
-        elif self.provider == 'google':
-            import google.generativeai as genai
-            api_key = os.getenv('GOOGLE_API_KEY')
+            api_key = os.getenv('ANTHROPIC_API_KEY')
             if not api_key:
-                print(f"⚠️ Agent {self.persona}: GOOGLE_API_KEY not found in env.")
-            genai.configure(api_key=api_key)
-            # FIX: Use self.model instead of hardcoding 'gemini-pro'
-            return genai.GenerativeModel(self.model)
+                print(f"⚠️ Agent {self.persona}: ANTHROPIC_API_KEY not found in env.")
+            return Anthropic(api_key=api_key)
             
         return None
 
     def analyze(self, match_data: Dict[str, Any], blind_mode: bool = True) -> Dict[str, Any]:
         """
-        Main analysis function. 
-        blind_mode=True means 'Don't see other agents' opinions yet'.
+        Main analysis function.
         """
+        # --- NEW LOGIC: BYPASS LLM FOR PURE DATA AGENTS ---
+        if self.provider == 'soccerdata':
+            return self._analyze_with_data(match_data)
+
+        # Standard LLM Flow
         system_prompt = self._get_persona_prompt()
         user_prompt = self._build_data_prompt(match_data)
 
         response_text = self._query_model(system_prompt, user_prompt)
         return self._parse_json(response_text)
 
+    def _analyze_with_data(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Deterministic analysis using hard data (Standings & H2H)
+        This replaces the LLM for the 'Statistician' role.
+        """
+        stats = match_data.get("quantitative_features", {})
+        
+        # Default probabilities (Draw bias)
+        home_prob, draw_prob, away_prob = 0.33, 0.34, 0.33
+        reasoning = []
+
+        # 1. ANALYZE STANDINGS (If available)
+        standings = stats.get('standings', [])
+        home_team = match_data.get('home_team')
+        away_team = match_data.get('away_team')
+        
+        if standings and len(standings) > 0:
+            # Helper to find rank
+            def get_rank(name):
+                for row in standings:
+                    if row.get('team') == name or row.get('Squad') == name:
+                        return int(row.get('Rk', 10))
+                return 10 # Default mid-table
+
+            home_rank = get_rank(home_team)
+            away_rank = get_rank(away_team)
+            
+            diff = away_rank - home_rank # Positive means home is better (lower rank)
+            
+            if diff > 5: # Home is much better
+                home_prob += 0.15; away_prob -= 0.10; draw_prob -= 0.05
+                reasoning.append(f"{home_team} is ranked significantly higher (#{home_rank} vs #{away_rank}).")
+            elif diff < -5: # Away is much better
+                away_prob += 0.15; home_prob -= 0.10; draw_prob -= 0.05
+                reasoning.append(f"{away_team} is ranked significantly higher (#{away_rank} vs #{home_rank}).")
+            else:
+                reasoning.append("Teams are close in league standings.")
+
+        # 2. ANALYZE H2H (Simple keyword check on the summary string)
+        h2h_text = stats.get('h2h_summary', '').lower()
+        if "meetings" in h2h_text:
+            reasoning.append(f"Historical context: {h2h_text}")
+        else:
+            reasoning.append("No significant H2H data available.")
+
+        # Normalize probabilities to sum to 1.0
+        total = home_prob + draw_prob + away_prob
+        return {
+            "home_win": round(home_prob / total, 2),
+            "draw": round(draw_prob / total, 2),
+            "away_win": round(away_prob / total, 2),
+            "confidence": 0.9, # High confidence because it's hard data
+            "reasoning": " ".join(reasoning)
+        }
+
     def _get_persona_prompt(self):
         """Defines HOW the agent thinks."""
         if self.persona == 'statistician':
-            return """
-            ROLE: Ruthless Quantitative Analyst.
-            DIRECTIVE: You care ONLY about numbers, xG, trends, and history. Ignore narratives.
-            OUTPUT: You must output a valid JSON object.
-            LOGIC:
-            1. Compare Head-to-Head history (Dominance factor).
-            2. Analyze recent form (Last 5 games).
-            3. Check league standings gap.
-            4. If the Home team is >5 spots higher, they are heavy favorites.
-            """
+            return "ROLE: Ruthless Quantitative Analyst..." # (Unused if provider=soccerdata)
         elif self.persona == 'tactician':
             return """
             ROLE: Football Tactical Scout.
@@ -136,21 +184,22 @@ class LLMAgent:
                 )
                 return resp.choices[0].message.content
             
-            # --- GOOGLE GEMINI HANDLER ---
-            # FIX: This logic was missing in your uploaded file
-            elif self.provider == 'google':
+            # --- ANTHROPIC CLAUDE HANDLER ---
+            elif self.provider == 'anthropic':
                 if not self.client:
-                    raise ValueError("Google Client not initialized (check API Key)")
+                    raise ValueError("Anthropic Client not initialized (check API Key)")
                 
-                # Gemini often works better with a combined prompt structure
-                combined_prompt = f"{system_msg}\n\n---\n\n{user_msg}"
-                
-                # Request JSON output
-                response = self.client.generate_content(
-                    combined_prompt,
-                    generation_config={"response_mime_type": "application/json"}
+                message = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1000,
+                    temperature=0.2,
+                    system=system_msg,
+                    messages=[
+                        {"role": "user", "content": user_msg},
+                        {"role": "assistant", "content": "{"} 
+                    ]
                 )
-                return response.text
+                return "{" + message.content[0].text
 
             return "{}" 
             
@@ -169,7 +218,6 @@ class LLMAgent:
 
     def _parse_json(self, text):
         try:
-            # Clean up potential markdown formatting (```json ... ```) often returned by Gemini
             cleaned_text = text.replace("```json", "").replace("```", "").strip()
             return json.loads(cleaned_text)
         except:

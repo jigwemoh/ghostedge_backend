@@ -8,15 +8,17 @@ class ConsensusEngine:
         
         # --- AGENT CONFIGURATION ---
         self.agents = [
-            # 1. Statistician (OpenAI GPT-4o-mini)
-            LLMAgent('statistician', provider='openai', model_name='gpt-4o-mini'),
+            # 1. Statistician (Pure Data / Deterministic)
+            # FIX: Switched provider to 'soccerdata'. This agent will NOT use an LLM.
+            LLMAgent('statistician', provider='soccerdata'),
             
             # 2. Tactician (OpenAI GPT-4o-mini)
+            # Analyzes formations and tactical matchups
             LLMAgent('tactician', provider='openai', model_name='gpt-4o-mini'),
             
-            # 3. Sentiment Analyst (Google Gemini 1.0 Pro)
-            # FIX: Trying 'gemini-1.0-pro' as a stable alternative to 1.5-flash/pro
-            LLMAgent('sentiment_analyst', provider='google', model_name='gemini-1.0-pro')
+            # 3. Sentiment Analyst (Anthropic Claude 3)
+            # Uses Claude's advanced reasoning for qualitative and sentiment analysis
+            LLMAgent('sentiment_analyst', provider='anthropic', model_name='claude-3-sonnet-20240229')
         ]
 
     def run_consensus(self, match_data: Dict[str, Any], baseline_prediction=None) -> Dict[str, Any]:
@@ -34,9 +36,9 @@ class ConsensusEngine:
         # --- AGGREGATION (Meta-Learning Logic) ---
         # We don't just average them. We weigh them based on reliability.
         weights = {
-            "statistician": 1.5,      # Hard data is king
-            "tactician": 1.0,         # Tactical fit is secondary
-            "sentiment_analyst": 0.8  # Narrative is tertiary
+            "statistician": 1.8,      # Increased weight since it's pure hard data
+            "tactician": 1.0,         
+            "sentiment_analyst": 0.8  
         }
 
         final_pred = self._calculate_weighted_average(round1_results, weights)
