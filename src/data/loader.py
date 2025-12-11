@@ -1,6 +1,3 @@
-import sys
-# Add the path where you KNOW soccerdata is installed
-sys.path.append("/Users/igwemoh/.pyenv/versions/3.11.13/lib/python3.11/site-packages")
 import os
 import json
 import logging
@@ -12,34 +9,42 @@ from pathlib import Path
 logging.getLogger("soccerdata").setLevel(logging.WARNING)
 
 # --- CONFIGURATION ---
-DATA_DIR = Path(os.getcwd()) / "soccer_data_cache"
+# Use /tmp for cache on Render (writable directory)
+if os.environ.get("RENDER"):
+    DATA_DIR = Path("/tmp/soccer_data_cache")
+else:
+    DATA_DIR = Path(os.getcwd()) / "soccer_data_cache"
 
-# --- DIRECT IMPORT (To debug "Library not found" error) ---
-# If this fails, the server will crash on startup with a clear ModuleNotFoundError
-import soccerdata as sd
-
-# If we get here, the library IS installed.
-SOCCERDATA_AVAILABLE = True
+# --- DIRECT IMPORT ---
+try:
+    import soccerdata as sd
+    SOCCERDATA_AVAILABLE = True
+except ImportError as e:
+    print(f"❌ CRITICAL IMPORT ERROR: {e}")
+    SOCCERDATA_AVAILABLE = False
 
 class SoccerDataLoader:
     def __init__(self, league_code: str = "ENG-Premier League", season: str = "2324"):
         self.init_error = None
-        
         self.league_code = league_code
         self.season = season
         self.scraper = None
         
+        # Ensure cache dir exists
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             print(f"⚠️ Warning: Could not create cache directory: {e}")
         
-        print(f"📚 Initializing FBref Scraper for {league_code} ({season})...")
-        try:
-            self.scraper = sd.FBref(leagues=league_code, seasons=season, data_dir=DATA_DIR)
-        except Exception as e:
-            self.init_error = str(e)
-            print(f"⚠️ Failed to initialize soccerdata scraper: {e}")
+        if SOCCERDATA_AVAILABLE:
+            print(f"📚 Initializing FBref Scraper for {league_code} ({season})...")
+            try:
+                self.scraper = sd.FBref(leagues=league_code, seasons=season, data_dir=DATA_DIR)
+            except Exception as e:
+                self.init_error = str(e)
+                print(f"⚠️ Failed to initialize soccerdata scraper: {e}")
+        else:
+            self.init_error = "Library 'soccerdata' missing on server."
 
     def fetch_full_match_context(self, home_team: Union[str, int] = None, away_team: Union[str, int] = None, *args, **kwargs) -> Dict[str, Any]:
         
@@ -58,13 +63,10 @@ class SoccerDataLoader:
         # 1. FETCH STANDINGS (With Fallback Strategy)
         standings_data = []
         try:
-            # Strategy A: Standard method
             if hasattr(self.scraper, 'read_standings'):
                 standings_df = self.scraper.read_standings()
                 standings_data = standings_df.reset_index().to_dict(orient='records')
-            # Strategy B: Fallback to team stats (often contains Rank 'Rk')
             else:
-                # print("⚠️ 'read_standings' missing. Attempting fallback...") 
                 stats_df = self.scraper.read_team_season_stats(stat_type="standard")
                 if not stats_df.empty and 'Rk' in stats_df.columns:
                     simple_df = stats_df[['Rk', 'MP', 'W', 'D', 'L', 'Pts']].copy()
