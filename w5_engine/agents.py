@@ -37,8 +37,6 @@ class LLMAgent:
                 print(f"❌ CRITICAL ERROR: Agent {self.persona}: ANTHROPIC_API_KEY is MISSING in environment variables.")
                 return None
             else:
-                # DEBUG: Print first 4 chars to confirm key is loaded in Render logs
-                # print(f"✅ Agent {self.persona}: Anthropic Key Loaded ({api_key[:4]}...)")
                 pass
             
             return Anthropic(api_key=api_key)
@@ -72,11 +70,14 @@ class LLMAgent:
         home_team = match_data.get('home_team')
         away_team = match_data.get('away_team')
         
-        if standings and len(standings) > 0:
+        if standings and isinstance(standings, list) and len(standings) > 0:
             def get_rank(name):
+                # Normalize name for comparison (simple lower case check)
+                target = name.lower() if name else ""
                 for row in standings:
-                    # Check both 'team' and 'Squad' keys as naming varies
-                    if row.get('team') == name or row.get('Squad') == name:
+                    # Check keys robustly
+                    team_name = row.get('team') or row.get('Squad') or ""
+                    if team_name and team_name.lower() in target or target in team_name.lower():
                         return int(row.get('Rk', 10))
                 return 10 # Default mid-table
 
@@ -87,10 +88,10 @@ class LLMAgent:
             
             if diff > 5: 
                 home_prob += 0.15; away_prob -= 0.10; draw_prob -= 0.05
-                reasoning.append(f"{home_team} is ranked significantly higher (#{home_rank} vs #{away_rank}).")
+                reasoning.append(f"{home_team} (#{home_rank}) is ranked significantly higher than {away_team} (#{away_rank}).")
             elif diff < -5: 
                 away_prob += 0.15; home_prob -= 0.10; draw_prob -= 0.05
-                reasoning.append(f"{away_team} is ranked significantly higher (#{away_rank} vs #{home_rank}).")
+                reasoning.append(f"{away_team} (#{away_rank}) is ranked significantly higher than {home_team} (#{home_rank}).")
             else:
                 reasoning.append(f"Teams are close in standings (#{home_rank} vs #{away_rank}).")
         else:
@@ -98,10 +99,14 @@ class LLMAgent:
 
         # 2. ANALYZE H2H
         h2h_text = str(stats.get('h2h_summary', '')).lower()
-        if "meetings" in h2h_text:
+        # More permissive check for H2H data
+        if "meetings" in h2h_text or "last:" in h2h_text or "won" in h2h_text:
             reasoning.append(f"H2H Factor: {h2h_text}")
+        elif "no h2h" in h2h_text:
+             reasoning.append("No significant H2H history.")
         else:
-            reasoning.append("No significant H2H history.")
+             reasoning.append(f"H2H Info: {h2h_text}")
+
 
         total = home_prob + draw_prob + away_prob
         return {
