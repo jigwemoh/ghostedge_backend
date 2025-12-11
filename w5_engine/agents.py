@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class LLMAgent:
-    # CHANGE 1: Switched default model to 'gpt-4o-mini' for better availability/speed
     def __init__(self, persona_type: str, provider: str = 'openai', model_name: str = 'gpt-4o-mini'):
         self.persona = persona_type
         self.provider = provider
@@ -14,21 +13,27 @@ class LLMAgent:
         self.client = self._init_client()
 
     def _init_client(self):
-        # Initialize clients based on provider
+        """Initialize clients based on provider."""
         if self.provider == 'openai':
             from openai import OpenAI
-            # Ensure the key is grabbed correctly
             api_key = os.getenv('OPENAI_API_KEY')
             if not api_key:
                 print(f"⚠️ Agent {self.persona}: OPENAI_API_KEY not found in env.")
             return OpenAI(api_key=api_key)
+        
         elif self.provider == 'anthropic':
             from anthropic import Anthropic
             return Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+        
         elif self.provider == 'google':
             import google.generativeai as genai
-            genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
-            return genai.GenerativeModel('gemini-pro')
+            api_key = os.getenv('GOOGLE_API_KEY')
+            if not api_key:
+                print(f"⚠️ Agent {self.persona}: GOOGLE_API_KEY not found in env.")
+            genai.configure(api_key=api_key)
+            # Initialize the generative model
+            return genai.GenerativeModel(self.model)
+            
         return None
 
     def analyze(self, match_data: Dict[str, Any], blind_mode: bool = True) -> Dict[str, Any]:
@@ -77,7 +82,7 @@ class LLMAgent:
         return "You are a helpful sports analyst."
 
     def _build_data_prompt(self, data):
-        """Injects the RAPIDAPI data into the prompt."""
+        """Injects the RAPIDAPI/SoccerData into the prompt."""
         stats = data.get("quantitative_features", {})
         context = data.get("qualitative_context", {})
         
@@ -118,6 +123,7 @@ class LLMAgent:
     def _query_model(self, system_msg, user_msg):
         """Safe wrapper to call different LLM providers."""
         try:
+            # --- OPENAI HANDLER ---
             if self.provider == 'openai':
                 if not self.client:
                     raise ValueError("OpenAI Client not initialized (check API Key)")
@@ -125,19 +131,33 @@ class LLMAgent:
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
-                    temperature=0.2, # Low temperature for accuracy
+                    temperature=0.2,
                     response_format={"type": "json_object"}
                 )
                 return resp.choices[0].message.content
             
-            # Placeholder for other providers
+            # --- GOOGLE GEMINI HANDLER ---
+            elif self.provider == 'google':
+                if not self.client:
+                    raise ValueError("Google Client not initialized (check API Key)")
+                
+                # Gemini doesn't always support 'system' roles in the same way, 
+                # so we combine the prompts for robustness.
+                combined_prompt = f"{system_msg}\n\n---\n\n{user_msg}"
+                
+                # Generate content (requesting JSON mime type for newer models)
+                response = self.client.generate_content(
+                    combined_prompt,
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                return response.text
+
             return "{}" 
-        except Exception as e:
-            # CHANGE 2: Print actual error to console AND include it in the return
-            error_msg = str(e)
-            print(f"❌ LLM Error ({self.persona}): {error_msg}")
             
-            # Return a valid JSON string with the error message so you can see it in the UI
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ LLM Error ({self.persona} / {self.provider}): {error_msg}")
+            
             fallback_json = json.dumps({
                 "home_win": 0.33, 
                 "draw": 0.34, 
@@ -149,6 +169,8 @@ class LLMAgent:
 
     def _parse_json(self, text):
         try:
-            return json.loads(text)
+            # Clean up potential markdown formatting (```json ... ```) often returned by Gemini
+            cleaned_text = text.replace("```json", "").replace("```", "").strip()
+            return json.loads(cleaned_text)
         except:
             return {"home_win": 0.33, "draw": 0.34, "away_win": 0.33, "confidence": 0.1, "reasoning": "JSON Parse Error", "agent": self.persona}

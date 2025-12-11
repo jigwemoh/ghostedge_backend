@@ -15,7 +15,7 @@ except ImportError:
 
 class SoccerDataLoader:
     def __init__(self, league_code: str = "ENG-Premier League", season: str = "2324"):
-        # NOTE: Switched default season to '2324' as it is more stable for testing
+        # Switched to '2324' (Last full season) to ensure data stability
         self.init_error = None
         
         if not SOCCERDATA_AVAILABLE:
@@ -49,40 +49,42 @@ class SoccerDataLoader:
             away_team = "Chelsea"
 
         if not self.scraper:
+            # This formatted error PROVES the new code is running
             error_msg = self.init_error if self.init_error else "Unknown initialization error"
             return {"error": f"Scraper initialization failed: {error_msg}"}
 
         print(f"🔄 Fetching Deep Data for {home_team} vs {away_team}...")
 
-        # 1. FETCH STANDINGS (Robust Fix)
+        # 1. FETCH STANDINGS (With Fallback Strategy)
         standings_data = []
         try:
-            # CHECK if the method exists before calling it
+            # Strategy A: Standard method
             if hasattr(self.scraper, 'read_standings'):
                 standings_df = self.scraper.read_standings()
-                if not standings_df.empty:
-                    standings_data = standings_df.reset_index().to_dict(orient='records')
+                standings_data = standings_df.reset_index().to_dict(orient='records')
+            # Strategy B: Fallback to team stats (often contains Rank 'Rk')
             else:
-                print("⚠️ Warning: 'read_standings' method missing. Skipping table data.")
+                print("⚠️ 'read_standings' missing. Attempting fallback via 'read_team_season_stats'...")
+                stats_df = self.scraper.read_team_season_stats(stat_type="standard")
+                if not stats_df.empty and 'Rk' in stats_df.columns:
+                    # Simplify the data for the AI
+                    simple_df = stats_df[['Rk', 'MP', 'W', 'D', 'L', 'Pts']].copy()
+                    standings_data = simple_df.reset_index().to_dict(orient='records')
         except Exception as e:
             print(f"⚠️ Standings Error: {e}")
 
-        # 2. FETCH H2H (Derived from Schedule)
+        # 2. FETCH H2H
         h2h_summary = "No H2H data."
         try:
-            # read_schedule IS available (confirmed by diagnostic)
             schedule = self.scraper.read_schedule()
-            
-            # Filter matches
             h2h_matches = schedule[
                 ((schedule['home_team'] == home_team) & (schedule['away_team'] == away_team)) |
                 ((schedule['home_team'] == away_team) & (schedule['away_team'] == home_team))
             ]
-            
             if not h2h_matches.empty:
                 count = len(h2h_matches)
                 last_date = h2h_matches.iloc[-1]['date']
-                h2h_summary = f"{count} meetings this season. Last meeting: {last_match_date}"
+                h2h_summary = f"{count} meetings this season. Last meeting: {last_date}"
             else:
                 h2h_summary = "No previous meetings found in this dataset."
         except Exception as e:
@@ -91,9 +93,7 @@ class SoccerDataLoader:
         # 3. FORM ANALYSIS
         form_summary = "Data Unavailable"
         try:
-            # read_team_match_stats IS available (confirmed by diagnostic)
             match_stats = self.scraper.read_team_match_stats(stat_type="shooting", team=home_team)
-            
             if not match_stats.empty:
                 avg_shots = match_stats['shooting']['Sh'].mean()
                 avg_goals = match_stats['shooting']['Gls'].mean()
@@ -112,7 +112,8 @@ class SoccerDataLoader:
             },
             "qualitative_context": {
                 "news_headlines": "News unavailable (Stats-only source)",
-                "venue": "Venue info in schedule"
+                "venue": "Venue info in schedule",
+                "referee": "Referee info in schedule"
             }
         }
 
