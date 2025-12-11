@@ -14,9 +14,9 @@ class ConsensusEngine:
             # 2. Tactician (OpenAI GPT-4o-mini)
             LLMAgent('tactician', provider='openai', model_name='gpt-4o-mini'),
             
-            # 3. Sentiment Analyst (Google Gemini 1.5 Flash)
-            # FIX: Switched from 'openai' to 'google'
-            LLMAgent('sentiment_analyst', provider='google', model_name='gemini-1.5-flash')
+            # 3. Sentiment Analyst (Google Gemini Pro)
+            # FIX: Switched model to 'gemini-pro' which is the stable standard
+            LLMAgent('sentiment_analyst', provider='google', model_name='gemini-pro')
         ]
 
     def run_consensus(self, match_data: Dict[str, Any], baseline_prediction=None) -> Dict[str, Any]:
