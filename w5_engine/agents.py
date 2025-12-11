@@ -31,7 +31,7 @@ class LLMAgent:
             if not api_key:
                 print(f"⚠️ Agent {self.persona}: GOOGLE_API_KEY not found in env.")
             genai.configure(api_key=api_key)
-            # Initialize the generative model
+            # FIX: Use self.model instead of hardcoding 'gemini-pro'
             return genai.GenerativeModel(self.model)
             
         return None
@@ -137,15 +137,15 @@ class LLMAgent:
                 return resp.choices[0].message.content
             
             # --- GOOGLE GEMINI HANDLER ---
+            # FIX: This logic was missing in your uploaded file
             elif self.provider == 'google':
                 if not self.client:
                     raise ValueError("Google Client not initialized (check API Key)")
                 
-                # Gemini doesn't always support 'system' roles in the same way, 
-                # so we combine the prompts for robustness.
+                # Gemini often works better with a combined prompt structure
                 combined_prompt = f"{system_msg}\n\n---\n\n{user_msg}"
                 
-                # Generate content (requesting JSON mime type for newer models)
+                # Request JSON output
                 response = self.client.generate_content(
                     combined_prompt,
                     generation_config={"response_mime_type": "application/json"}

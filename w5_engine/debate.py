@@ -5,11 +5,18 @@ import numpy as np
 class ConsensusEngine:
     def __init__(self, debate_rounds: int = 2, min_agents: int = 3):
         self.debate_rounds = debate_rounds
-        # We explicitly use 'provider' here to match the class definition
+        
+        # --- AGENT CONFIGURATION ---
         self.agents = [
-            LLMAgent('statistician', provider='openai'),
-            LLMAgent('tactician', provider='openai'),
-            LLMAgent('sentiment_analyst', provider='openai')
+            # 1. Statistician (OpenAI GPT-4o-mini)
+            LLMAgent('statistician', provider='openai', model_name='gpt-4o-mini'),
+            
+            # 2. Tactician (OpenAI GPT-4o-mini)
+            LLMAgent('tactician', provider='openai', model_name='gpt-4o-mini'),
+            
+            # 3. Sentiment Analyst (Google Gemini 1.5 Flash)
+            # FIX: Switched from 'openai' to 'google'
+            LLMAgent('sentiment_analyst', provider='google', model_name='gemini-1.5-flash')
         ]
 
     def run_consensus(self, match_data: Dict[str, Any], baseline_prediction=None) -> Dict[str, Any]:
@@ -22,15 +29,14 @@ class ConsensusEngine:
             analysis = agent.analyze(match_data, blind_mode=True)
             analysis['agent'] = agent.persona
             round1_results.append(analysis)
-            print(f"   👤 {agent.persona.title()}: Home {analysis.get('home_win'):.0%} | {analysis.get('reasoning')}")
+            print(f"   👤 {agent.persona.title()} ({agent.provider}): Home {analysis.get('home_win'):.0%} | {analysis.get('reasoning')}")
 
         # --- AGGREGATION (Meta-Learning Logic) ---
         # We don't just average them. We weigh them based on reliability.
-        # Statistician gets 1.5x weight because numbers are usually more reliable than news.
         weights = {
-            "statistician": 1.5,
-            "tactician": 1.0,
-            "sentiment_analyst": 0.8
+            "statistician": 1.5,      # Hard data is king
+            "tactician": 1.0,         # Tactical fit is secondary
+            "sentiment_analyst": 0.8  # Narrative is tertiary
         }
 
         final_pred = self._calculate_weighted_average(round1_results, weights)
@@ -64,7 +70,6 @@ class ConsensusEngine:
 
     def _calculate_agreement(self, results):
         # Calculate standard deviation of the Home Win probability
-        # Use a safe default if missing
         home_probs = [r.get('home_win', 0.33) for r in results]
         std_dev = np.std(home_probs)
         # Low variance = High agreement. Scale 0-1.
