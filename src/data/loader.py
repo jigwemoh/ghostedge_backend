@@ -1,29 +1,27 @@
 import os
 import json
+import logging
 import pandas as pd
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 
+# --- SILENCE SOCCERDATA NOISE ---
+logging.getLogger("soccerdata").setLevel(logging.WARNING)
+
 # --- CONFIGURATION ---
 DATA_DIR = Path(os.getcwd()) / "soccer_data_cache"
 
-try:
-    import soccerdata as sd
-    SOCCERDATA_AVAILABLE = True
-except ImportError:
-    SOCCERDATA_AVAILABLE = False
+# --- DIRECT IMPORT (To debug "Library not found" error) ---
+# If this fails, the server will crash on startup with a clear ModuleNotFoundError
+import soccerdata as sd
+
+# If we get here, the library IS installed.
+SOCCERDATA_AVAILABLE = True
 
 class SoccerDataLoader:
     def __init__(self, league_code: str = "ENG-Premier League", season: str = "2324"):
-        # Switched to '2324' (Last full season) to ensure data stability
         self.init_error = None
         
-        if not SOCCERDATA_AVAILABLE:
-            self.init_error = "Library 'soccerdata' not found."
-            print(f"❌ WARNING: {self.init_error}")
-            self.scraper = None
-            return
-
         self.league_code = league_code
         self.season = season
         self.scraper = None
@@ -49,7 +47,6 @@ class SoccerDataLoader:
             away_team = "Chelsea"
 
         if not self.scraper:
-            # This formatted error PROVES the new code is running
             error_msg = self.init_error if self.init_error else "Unknown initialization error"
             return {"error": f"Scraper initialization failed: {error_msg}"}
 
@@ -64,10 +61,9 @@ class SoccerDataLoader:
                 standings_data = standings_df.reset_index().to_dict(orient='records')
             # Strategy B: Fallback to team stats (often contains Rank 'Rk')
             else:
-                print("⚠️ 'read_standings' missing. Attempting fallback via 'read_team_season_stats'...")
+                # print("⚠️ 'read_standings' missing. Attempting fallback...") 
                 stats_df = self.scraper.read_team_season_stats(stat_type="standard")
                 if not stats_df.empty and 'Rk' in stats_df.columns:
-                    # Simplify the data for the AI
                     simple_df = stats_df[['Rk', 'MP', 'W', 'D', 'L', 'Pts']].copy()
                     standings_data = simple_df.reset_index().to_dict(orient='records')
         except Exception as e:
