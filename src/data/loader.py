@@ -1,4 +1,4 @@
-import os
+ import os
 import requests
 import logging
 from typing import Dict, Any, List, Optional, Union
@@ -62,8 +62,19 @@ class SoccerDataLoader:
              h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
              if h2h_data.get("response"):
                  matches = h2h_data["response"]
-                 count = len(matches)
-                 h2h_summary = f"{count} recent meetings found."
+                 # Check if the response is a list or a dict containing list
+                 if isinstance(matches, dict) and "h2h" in matches:
+                     matches = matches["h2h"]
+                 
+                 if isinstance(matches, list) and matches:
+                     count = len(matches)
+                     h2h_summary = f"{count} recent meetings found."
+                     # Try to get details of the last match
+                     last_match = matches[0]
+                     if isinstance(last_match, dict):
+                         score = last_match.get("score", "N/A")
+                         date = last_match.get("date", "Unknown Date")
+                         h2h_summary += f" Last: {date} ({score})"
 
         return {
             "match_id": str(event_id) if event_id else "Unknown",
