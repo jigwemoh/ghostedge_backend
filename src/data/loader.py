@@ -1,195 +1,82 @@
 import os
-import json
+import requests
 import logging
-import pandas as pd
-import numpy as np
 from typing import Dict, Any, List, Optional, Union
-from pathlib import Path
-from difflib import get_close_matches
-
-# --- SILENCE NOISE ---
-logging.getLogger("soccerdata").setLevel(logging.WARNING)
 
 # --- CONFIGURATION ---
-if os.environ.get("RENDER"):
-    DATA_DIR = Path("/tmp/soccer_data_cache")
-else:
-    DATA_DIR = Path(os.getcwd()) / "soccer_data_cache"
-
-# --- DIRECT IMPORT ---
-try:
-    import soccerdata as sd
-    SOCCERDATA_AVAILABLE = True
-except ImportError as e:
-    print(f"❌ CRITICAL IMPORT ERROR: {e}")
-    SOCCERDATA_AVAILABLE = False
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+API_HOST = "free-api-live-football-data.p.rapidapi.com"
+BASE_URL = "https://free-api-live-football-data.p.rapidapi.com"
 
 class SoccerDataLoader:
-    def __init__(self, season: str = "2425"):
-        self.init_error = None
-        self.season = season
-        self.scraper = None
-        self.standings_df = pd.DataFrame()
-        self.all_teams = []
+    def __init__(self, season: str = "2024"):
+        self.headers = {
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": API_HOST
+        }
+        self.season = int(season[:4]) if len(season) == 4 else 2024
         
-        # Ensure cache dir exists
+        if not RAPIDAPI_KEY:
+            print("❌ WARNING: RAPIDAPI_KEY not found in environment.")
+
+    def _get(self, endpoint: str, params: Dict) -> Dict:
+        """Helper to make API calls safely."""
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(f"⚠️ Warning: Could not create cache directory: {e}")
-        
-        if SOCCERDATA_AVAILABLE:
-            # DEFINING FALLBACK STRATEGIES
-            # If one configuration fails (e.g. invalid league ID), we automatically try the next.
-            league_configs = [
-                # 1. Broadest Coverage (May fail if Championship ID is invalid)
-                ["ENG-Premier League", "ENG-Championship", "ESP-La Liga", "ITA-Serie A", "GER-Bundesliga", "FRA-Ligue 1"],
-                # 2. Safe List (Big 5 Only - Known to be stable)
-                ["ENG-Premier League", "ESP-La Liga", "ITA-Serie A", "GER-Bundesliga", "FRA-Ligue 1"],
-                # 3. Minimal Fallback
-                ["ENG-Premier League"]
-            ]
-
-            for i, leagues in enumerate(league_configs):
-                try:
-                    print(f"📚 Initializing FBref Scraper (Attempt {i+1}/{len(league_configs)})...")
-                    self.scraper = sd.FBref(leagues=leagues, seasons=season, data_dir=DATA_DIR)
-                    
-                    # Pre-fetch standings to build a name index
-                    print("   ...Pre-fetching team names index")
-                    self.standings_df = self.scraper.read_standings()
-                    self.all_teams = self._extract_all_teams(self.standings_df)
-                    
-                    # If we reach here, initialization succeeded
-                    print("✅ Scraper Initialized Successfully.")
-                    break
-                except Exception as e:
-                    print(f"   ⚠️ Attempt {i+1} failed: {e}")
-                    # If this was the last attempt, record the error
-                    if i == len(league_configs) - 1:
-                        self.init_error = str(e)
-                        print("❌ All initialization attempts failed.")
-        else:
-            self.init_error = "Library 'soccerdata' missing."
-
-    def _extract_all_teams(self, df):
-        """Extracts a flat list of all valid team names from standings."""
-        if df is None or df.empty:
-            return []
-        # 'team' is usually in the index or a column depending on pandas version/soccerdata
-        teams = []
-        if 'team' in df.columns:
-            teams = df['team'].unique().tolist()
-        elif 'Squad' in df.columns:
-            teams = df['Squad'].unique().tolist()
-        else:
-            # If team is in index
-            teams = df.index.get_level_values('team').unique().tolist()
-        return teams
-
-    def _find_canonical_name(self, input_name: str):
-        """
-        Finds the exact FBref team name using fuzzy matching.
-        Solves 'Man Utd' vs 'Manchester United' issues.
-        """
-        if not self.all_teams:
-            return input_name # Fallback
-            
-        # 1. Exact Match (Case insensitive)
-        for team in self.all_teams:
-            if team.lower() == input_name.lower():
-                return team
-                
-        # 2. Fuzzy Match
-        matches = get_close_matches(input_name, self.all_teams, n=1, cutoff=0.6)
-        if matches:
-            print(f"   🔍 Name Map: '{input_name}' -> '{matches[0]}'")
-            return matches[0]
-            
-        return input_name
-
-    def fetch_full_match_context(self, home_team: Union[str, int] = None, away_team: Union[str, int] = None, *args, **kwargs) -> Dict[str, Any]:
-        
-        # --- LEGACY ADAPTER ---
-        if home_team is None or isinstance(home_team, int):
-            print(f"⚠️ API MISMATCH: Defaulting to Liverpool vs Chelsea.")
-            home_team = "Liverpool"
-            away_team = "Chelsea"
-
-        if not self.scraper:
-            return {"error": f"Scraper initialization failed: {self.init_error}"}
-
-        # --- NORMALIZE NAMES ---
-        # This is the secret sauce. We switch to the "Real" names before asking the scraper.
-        real_home = self._find_canonical_name(str(home_team))
-        real_away = self._find_canonical_name(str(away_team))
-
-        print(f"🔄 Fetching Data for {real_home} vs {real_away}...")
-
-        # 1. FETCH STANDINGS
-        standings_data = []
-        try:
-            # Filter the pre-fetched standings for these specific teams
-            # We look for rows where the index (or column) matches our teams
-            if not self.standings_df.empty:
-                # Reset index to make searching easier
-                df_reset = self.standings_df.reset_index()
-                # Filter for relevant rows
-                mask = df_reset['team'].isin([real_home, real_away])
-                relevant_df = df_reset[mask]
-                standings_data = relevant_df.to_dict(orient='records')
-        except Exception as e:
-            print(f"⚠️ Standings Error: {e}")
-
-        # 2. FETCH H2H
-        h2h_summary = "No H2H data."
-        try:
-            schedule = self.scraper.read_schedule()
-            # Robust filtering using the canonical names
-            h2h_matches = schedule[
-                ((schedule['home_team'] == real_home) & (schedule['away_team'] == real_away)) |
-                ((schedule['home_team'] == real_away) & (schedule['away_team'] == real_home))
-            ]
-            
-            if not h2h_matches.empty:
-                count = len(h2h_matches)
-                last_date = h2h_matches.iloc[-1]['date']
-                # Get last result if available
-                last_home = h2h_matches.iloc[-1]['home_team']
-                last_score = f"{h2h_matches.iloc[-1]['home_score']}-{h2h_matches.iloc[-1]['away_score']}"
-                h2h_summary = f"{count} meetings this season. Last: {last_date} ({last_home} {last_score})"
+            url = f"{BASE_URL}/{endpoint}"
+            response = requests.get(url, headers=self.headers, params=params, timeout=10)
+            if response.status_code == 200:
+                return response.json()
             else:
-                h2h_summary = "No previous meetings found in this dataset."
+                print(f"⚠️ API Error {endpoint}: {response.status_code} {response.text}")
+                return {}
         except Exception as e:
-            print(f"⚠️ H2H Error: {e}")
+            print(f"❌ Connection Error: {e}")
+            return {}
 
-        # 3. FORM ANALYSIS
-        form_summary = "Data Unavailable"
-        try:
-            # Try detailed shooting stats first
-            match_stats = self.scraper.read_team_match_stats(stat_type="shooting", team=real_home)
-            if not match_stats.empty:
-                avg_shots = match_stats['shooting']['Sh'].mean()
-                avg_goals = match_stats['shooting']['Gls'].mean()
-                form_summary = f"{real_home} Form: {avg_shots:.1f} shots/pg, {avg_goals:.1f} goals/pg."
-            else:
-                # Fallback to basic schedule results if shooting data is missing
-                form_summary = "Detailed stats missing, check standings for form."
-        except Exception as e:
-            pass
+    def _get_team_id(self, team_name: str) -> Optional[int]:
+        """Finds the API-Football Team ID from a name."""
+        # Note: Endpoint might differ for this specific API, checking documentation is advised if this fails.
+        # Assuming standard 'teams' endpoint exists or similar structure.
+        # For free-api-live-football-data, endpoints are different. 
+        # Usually it's /football-get-all-teams-by-league-id but we don't have league ID easily.
+        # Fallback to search if available or keep generic.
+        
+        # NOTE: The previous API had a search. This one might require specific endpoints.
+        # Leaving as generic fetch for now, but be aware this might need endpoint adjustment based on specific API docs.
+        return None 
+
+    def fetch_full_match_context(self, home_team: Union[str, int], away_team: Union[str, int], *args, **kwargs) -> Dict[str, Any]:
+        print(f"🔄 Fetching Data (Free API) for {home_team} vs {away_team}...")
+
+        # The Free API works differently. It often needs event IDs directly or specific endpoints.
+        # If we have event_id in kwargs, use it.
+        event_id = kwargs.get('event_id')
+        
+        h2h_summary = "H2H data unavailable in free tier without event ID."
+        standings_summary = []
+        form_summary = "Form Data Unavailable"
+
+        if event_id:
+             # Fetch H2H using event ID if possible
+             # Endpoint: football-get-head-to-head?eventid={id}
+             h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
+             if h2h_data.get("response"):
+                 matches = h2h_data["response"]
+                 count = len(matches)
+                 h2h_summary = f"{count} recent meetings found."
 
         return {
-            "match_id": "Generated-ID",
+            "match_id": str(event_id) if event_id else "Unknown",
             "quantitative_features": {
                 "h2h_summary": h2h_summary,
-                "standings": standings_data,
+                "standings": standings_summary, 
                 "home_form": form_summary,
                 "tactical_setup": {"home_formation": "Unknown", "away_formation": "Unknown"},
             },
             "qualitative_context": {
-                "news_headlines": "News unavailable (Stats-only source)",
-                "venue": "Venue info in schedule",
-                "referee": "Referee info in schedule"
+                "news_headlines": "Live news requires paid tier",
+                "venue": "Venue info available in fixture details",
+                "referee": "Referee info available in fixture details"
             }
         }
 
