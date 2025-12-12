@@ -2,14 +2,15 @@ import os
 import json
 import logging
 import pandas as pd
+import numpy as np
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
+from difflib import get_close_matches
 
-# --- SILENCE SOCCERDATA NOISE ---
+# --- SILENCE NOISE ---
 logging.getLogger("soccerdata").setLevel(logging.WARNING)
 
 # --- CONFIGURATION ---
-# Use /tmp for cache on Render (writable directory)
 if os.environ.get("RENDER"):
     DATA_DIR = Path("/tmp/soccer_data_cache")
 else:
@@ -24,11 +25,20 @@ except ImportError as e:
     SOCCERDATA_AVAILABLE = False
 
 class SoccerDataLoader:
-    def __init__(self, league_code: str = "ENG-Premier League", season: str = "2324"):
+    def __init__(self, season: str = "2425"):
         self.init_error = None
-        self.league_code = league_code
         self.season = season
         self.scraper = None
+        
+        # 1. BROAD COVERAGE: Include Top 5 Leagues + Championship
+        self.leagues = [
+            "ENG-Premier League",
+            "ENG-Championship", 
+            "ESP-La Liga",
+            "ITA-Serie A",
+            "GER-Bundesliga",
+            "FRA-Ligue 1"
+        ]
         
         # Ensure cache dir exists
         try:
@@ -37,14 +47,55 @@ class SoccerDataLoader:
             print(f"⚠️ Warning: Could not create cache directory: {e}")
         
         if SOCCERDATA_AVAILABLE:
-            print(f"📚 Initializing FBref Scraper for {league_code} ({season})...")
+            print(f"📚 Initializing FBref Scraper for {len(self.leagues)} leagues ({season})...")
             try:
-                self.scraper = sd.FBref(leagues=league_code, seasons=season, data_dir=DATA_DIR)
+                # Initialize scraper for ALL leagues at once
+                self.scraper = sd.FBref(leagues=self.leagues, seasons=season, data_dir=DATA_DIR)
+                # Pre-fetch standings to build a name index
+                print("   ...Pre-fetching team names index")
+                self.standings_df = self.scraper.read_standings()
+                self.all_teams = self._extract_all_teams(self.standings_df)
             except Exception as e:
                 self.init_error = str(e)
-                print(f"⚠️ Failed to initialize soccerdata scraper: {e}")
+                print(f"⚠️ Failed to initialize scraper: {e}")
         else:
-            self.init_error = "Library 'soccerdata' missing on server."
+            self.init_error = "Library 'soccerdata' missing."
+
+    def _extract_all_teams(self, df):
+        """Extracts a flat list of all valid team names from standings."""
+        if df is None or df.empty:
+            return []
+        # 'team' is usually in the index or a column depending on pandas version/soccerdata
+        teams = []
+        if 'team' in df.columns:
+            teams = df['team'].unique().tolist()
+        elif 'Squad' in df.columns:
+            teams = df['Squad'].unique().tolist()
+        else:
+            # If team is in index
+            teams = df.index.get_level_values('team').unique().tolist()
+        return teams
+
+    def _find_canonical_name(self, input_name: str):
+        """
+        Finds the exact FBref team name using fuzzy matching.
+        Solves 'Man Utd' vs 'Manchester United' issues.
+        """
+        if not self.all_teams:
+            return input_name # Fallback
+            
+        # 1. Exact Match (Case insensitive)
+        for team in self.all_teams:
+            if team.lower() == input_name.lower():
+                return team
+                
+        # 2. Fuzzy Match
+        matches = get_close_matches(input_name, self.all_teams, n=1, cutoff=0.6)
+        if matches:
+            print(f"   🔍 Name Map: '{input_name}' -> '{matches[0]}'")
+            return matches[0]
+            
+        return input_name
 
     def fetch_full_match_context(self, home_team: Union[str, int] = None, away_team: Union[str, int] = None, *args, **kwargs) -> Dict[str, Any]:
         
@@ -55,22 +106,27 @@ class SoccerDataLoader:
             away_team = "Chelsea"
 
         if not self.scraper:
-            error_msg = self.init_error if self.init_error else "Unknown initialization error"
-            return {"error": f"Scraper initialization failed: {error_msg}"}
+            return {"error": f"Scraper initialization failed: {self.init_error}"}
 
-        print(f"🔄 Fetching Deep Data for {home_team} vs {away_team}...")
+        # --- NORMALIZE NAMES ---
+        # This is the secret sauce. We switch to the "Real" names before asking the scraper.
+        real_home = self._find_canonical_name(str(home_team))
+        real_away = self._find_canonical_name(str(away_team))
 
-        # 1. FETCH STANDINGS (With Fallback Strategy)
+        print(f"🔄 Fetching Data for {real_home} vs {real_away}...")
+
+        # 1. FETCH STANDINGS
         standings_data = []
         try:
-            if hasattr(self.scraper, 'read_standings'):
-                standings_df = self.scraper.read_standings()
-                standings_data = standings_df.reset_index().to_dict(orient='records')
-            else:
-                stats_df = self.scraper.read_team_season_stats(stat_type="standard")
-                if not stats_df.empty and 'Rk' in stats_df.columns:
-                    simple_df = stats_df[['Rk', 'MP', 'W', 'D', 'L', 'Pts']].copy()
-                    standings_data = simple_df.reset_index().to_dict(orient='records')
+            # Filter the pre-fetched standings for these specific teams
+            # We look for rows where the index (or column) matches our teams
+            if not self.standings_df.empty:
+                # Reset index to make searching easier
+                df_reset = self.standings_df.reset_index()
+                # Filter for relevant rows
+                mask = df_reset['team'].isin([real_home, real_away])
+                relevant_df = df_reset[mask]
+                standings_data = relevant_df.to_dict(orient='records')
         except Exception as e:
             print(f"⚠️ Standings Error: {e}")
 
@@ -78,28 +134,36 @@ class SoccerDataLoader:
         h2h_summary = "No H2H data."
         try:
             schedule = self.scraper.read_schedule()
+            # Robust filtering using the canonical names
             h2h_matches = schedule[
-                ((schedule['home_team'] == home_team) & (schedule['away_team'] == away_team)) |
-                ((schedule['home_team'] == away_team) & (schedule['away_team'] == home_team))
+                ((schedule['home_team'] == real_home) & (schedule['away_team'] == real_away)) |
+                ((schedule['home_team'] == real_away) & (schedule['away_team'] == real_home))
             ]
+            
             if not h2h_matches.empty:
                 count = len(h2h_matches)
                 last_date = h2h_matches.iloc[-1]['date']
-                h2h_summary = f"{count} meetings this season. Last meeting: {last_date}"
+                # Get last result if available
+                last_home = h2h_matches.iloc[-1]['home_team']
+                last_score = f"{h2h_matches.iloc[-1]['home_score']}-{h2h_matches.iloc[-1]['away_score']}"
+                h2h_summary = f"{count} meetings this season. Last: {last_date} ({last_home} {last_score})"
             else:
                 h2h_summary = "No previous meetings found in this dataset."
         except Exception as e:
-            h2h_summary = "No H2H found (check team names)."
+            print(f"⚠️ H2H Error: {e}")
 
         # 3. FORM ANALYSIS
         form_summary = "Data Unavailable"
         try:
-            match_stats = self.scraper.read_team_match_stats(stat_type="shooting", team=home_team)
+            # Try detailed shooting stats first
+            match_stats = self.scraper.read_team_match_stats(stat_type="shooting", team=real_home)
             if not match_stats.empty:
                 avg_shots = match_stats['shooting']['Sh'].mean()
                 avg_goals = match_stats['shooting']['Gls'].mean()
-                form_summary = (f"{home_team} Form: Avg {avg_shots:.1f} shots/game, "
-                                f"{avg_goals:.1f} goals/game.")
+                form_summary = f"{real_home} Form: {avg_shots:.1f} shots/pg, {avg_goals:.1f} goals/pg."
+            else:
+                # Fallback to basic schedule results if shooting data is missing
+                form_summary = "Detailed stats missing, check standings for form."
         except Exception as e:
             pass
 
