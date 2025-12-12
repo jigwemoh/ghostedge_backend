@@ -29,16 +29,8 @@ class SoccerDataLoader:
         self.init_error = None
         self.season = season
         self.scraper = None
-        
-        # 1. BROAD COVERAGE: Include Top 5 Leagues + Championship
-        self.leagues = [
-            "ENG-Premier League",
-            "ENG-Championship", 
-            "ESP-La Liga",
-            "ITA-Serie A",
-            "GER-Bundesliga",
-            "FRA-Ligue 1"
-        ]
+        self.standings_df = pd.DataFrame()
+        self.all_teams = []
         
         # Ensure cache dir exists
         try:
@@ -47,17 +39,36 @@ class SoccerDataLoader:
             print(f"⚠️ Warning: Could not create cache directory: {e}")
         
         if SOCCERDATA_AVAILABLE:
-            print(f"📚 Initializing FBref Scraper for {len(self.leagues)} leagues ({season})...")
-            try:
-                # Initialize scraper for ALL leagues at once
-                self.scraper = sd.FBref(leagues=self.leagues, seasons=season, data_dir=DATA_DIR)
-                # Pre-fetch standings to build a name index
-                print("   ...Pre-fetching team names index")
-                self.standings_df = self.scraper.read_standings()
-                self.all_teams = self._extract_all_teams(self.standings_df)
-            except Exception as e:
-                self.init_error = str(e)
-                print(f"⚠️ Failed to initialize scraper: {e}")
+            # DEFINING FALLBACK STRATEGIES
+            # If one configuration fails (e.g. invalid league ID), we automatically try the next.
+            league_configs = [
+                # 1. Broadest Coverage (May fail if Championship ID is invalid)
+                ["ENG-Premier League", "ENG-Championship", "ESP-La Liga", "ITA-Serie A", "GER-Bundesliga", "FRA-Ligue 1"],
+                # 2. Safe List (Big 5 Only - Known to be stable)
+                ["ENG-Premier League", "ESP-La Liga", "ITA-Serie A", "GER-Bundesliga", "FRA-Ligue 1"],
+                # 3. Minimal Fallback
+                ["ENG-Premier League"]
+            ]
+
+            for i, leagues in enumerate(league_configs):
+                try:
+                    print(f"📚 Initializing FBref Scraper (Attempt {i+1}/{len(league_configs)})...")
+                    self.scraper = sd.FBref(leagues=leagues, seasons=season, data_dir=DATA_DIR)
+                    
+                    # Pre-fetch standings to build a name index
+                    print("   ...Pre-fetching team names index")
+                    self.standings_df = self.scraper.read_standings()
+                    self.all_teams = self._extract_all_teams(self.standings_df)
+                    
+                    # If we reach here, initialization succeeded
+                    print("✅ Scraper Initialized Successfully.")
+                    break
+                except Exception as e:
+                    print(f"   ⚠️ Attempt {i+1} failed: {e}")
+                    # If this was the last attempt, record the error
+                    if i == len(league_configs) - 1:
+                        self.init_error = str(e)
+                        print("❌ All initialization attempts failed.")
         else:
             self.init_error = "Library 'soccerdata' missing."
 
