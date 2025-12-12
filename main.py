@@ -11,7 +11,7 @@ rapid_key = os.getenv("RAPIDAPI_KEY")
 if openai_key:
     print(f"✅ SYSTEM: OpenAI Key loaded (Starts with {openai_key[:5]}...)")
 else:
-    print("❌ ERROR: OpenAI Key is MISSING. The AI Debate will fail.")
+    print("❌ ERROR: OpenAI Key is MISSING. Check your .env file.")
 
 if rapid_key:
     print(f"✅ SYSTEM: RapidAPI Key loaded.")
@@ -44,8 +44,8 @@ app.add_middleware(
 def health_check():
     return {
         "status": "GhostEdge AI is Online", 
-        "mode": "Event-Centric (SoccerData/FBref)", 
-        "version": "3.3"
+        "mode": "Event-Centric (RapidAPI)", 
+        "version": "3.4"
     }
 
 # 6. DATA MODEL
@@ -61,21 +61,21 @@ class MatchRequest(BaseModel):
 @app.post("/analyze/consensus")
 async def run_consensus(match: MatchRequest):
     try:
-        print(f"👻 GhostEdge Analyzing: {match.home_team_name} vs {match.away_team_name}...")
+        print(f"👻 GhostEdge Analyzing: {match.home_team_name} vs {match.away_team_name} (Event {match.event_id})...")
 
         # --- STEP A: FETCH REAL DATA ---
+        # FIX: We now pass 'event_id' and 'league_id' so the loader can actually find data.
         match_context = real_data_loader.fetch_full_match_context(
             home_team=match.home_team_name,
-            away_team=match.away_team_name
+            away_team=match.away_team_name,
+            event_id=match.event_id,
+            league_id=match.league_id
         )
 
         # --- STEP B: PREPARE DATA FOR AI AGENTS ---
-        # ⚠️ CRITICAL FIX: Pass 'qualitative_context' as a DICT, not a STRING.
-        # The agents.py file expects to use .get('venue'), which requires a dictionary.
         agent_data_packet = {
             "home_team": match.home_team_name,
             "away_team": match.away_team_name,
-            # We use .get() here to prevent errors if the key is missing from the loader
             "quantitative_features": match_context.get('quantitative_features', {}),
             "qualitative_context": match_context.get('qualitative_context', {}) 
         }

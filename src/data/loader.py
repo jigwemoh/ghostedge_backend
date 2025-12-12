@@ -1,4 +1,4 @@
- import os
+import os
 import requests
 import logging
 from typing import Dict, Any, List, Optional, Union
@@ -14,7 +14,6 @@ class SoccerDataLoader:
             "X-RapidAPI-Key": RAPIDAPI_KEY,
             "X-RapidAPI-Host": API_HOST
         }
-        self.season = int(season[:4]) if len(season) == 4 else 2024
         
         if not RAPIDAPI_KEY:
             print("❌ WARNING: RAPIDAPI_KEY not found in environment.")
@@ -27,54 +26,54 @@ class SoccerDataLoader:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"⚠️ API Error {endpoint}: {response.status_code} {response.text}")
+                # print(f"⚠️ API Error {endpoint}: {response.status_code}")
                 return {}
         except Exception as e:
             print(f"❌ Connection Error: {e}")
             return {}
 
-    def _get_team_id(self, team_name: str) -> Optional[int]:
-        """Finds the API-Football Team ID from a name."""
-        # Note: Endpoint might differ for this specific API, checking documentation is advised if this fails.
-        # Assuming standard 'teams' endpoint exists or similar structure.
-        # For free-api-live-football-data, endpoints are different. 
-        # Usually it's /football-get-all-teams-by-league-id but we don't have league ID easily.
-        # Fallback to search if available or keep generic.
-        
-        # NOTE: The previous API had a search. This one might require specific endpoints.
-        # Leaving as generic fetch for now, but be aware this might need endpoint adjustment based on specific API docs.
-        return None 
-
     def fetch_full_match_context(self, home_team: Union[str, int], away_team: Union[str, int], *args, **kwargs) -> Dict[str, Any]:
         print(f"🔄 Fetching Data (Free API) for {home_team} vs {away_team}...")
 
-        # The Free API works differently. It often needs event IDs directly or specific endpoints.
-        # If we have event_id in kwargs, use it.
         event_id = kwargs.get('event_id')
+        league_id = kwargs.get('league_id')
         
-        h2h_summary = "H2H data unavailable in free tier without event ID."
+        h2h_summary = "No H2H data found."
         standings_summary = []
         form_summary = "Form Data Unavailable"
 
+        # 1. FETCH H2H
         if event_id:
-             # Fetch H2H using event ID if possible
-             # Endpoint: football-get-head-to-head?eventid={id}
              h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
              if h2h_data.get("response"):
                  matches = h2h_data["response"]
-                 # Check if the response is a list or a dict containing list
+                 # Handle dictionary vs list response structure
                  if isinstance(matches, dict) and "h2h" in matches:
                      matches = matches["h2h"]
                  
                  if isinstance(matches, list) and matches:
                      count = len(matches)
-                     h2h_summary = f"{count} recent meetings found."
-                     # Try to get details of the last match
                      last_match = matches[0]
-                     if isinstance(last_match, dict):
-                         score = last_match.get("score", "N/A")
-                         date = last_match.get("date", "Unknown Date")
-                         h2h_summary += f" Last: {date} ({score})"
+                     date = last_match.get("date", "Unknown") if isinstance(last_match, dict) else "Unknown"
+                     h2h_summary = f"{count} recent meetings. Last: {date}"
+
+        # 2. FETCH STANDINGS (New Feature)
+        if league_id:
+            # Note: 47 is Premier League in some mappings, but we use what is passed
+            table_data = self._get("football-get-standings", {"leagueid": league_id})
+            if table_data.get("response"):
+                raw_table = table_data["response"]
+                # The API structure can be complex (league -> standings -> array)
+                if isinstance(raw_table, dict) and "standings" in raw_table:
+                    # Extract top 6 or relevant teams for brevity
+                    standings_list = raw_table["standings"][0] if raw_table["standings"] else []
+                    # Filter for just our teams if possible, or take top few
+                    for row in standings_list[:6]: # Top 6 context
+                        standings_summary.append({
+                            "rank": row.get("rank"),
+                            "team": row.get("team", {}).get("name"),
+                            "points": row.get("points")
+                        })
 
         return {
             "match_id": str(event_id) if event_id else "Unknown",
