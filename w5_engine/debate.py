@@ -7,9 +7,14 @@ class ConsensusEngine:
         self.debate_rounds = debate_rounds
         # We explicitly use 'provider' here to match the class definition
         self.agents = [
-            LLMAgent('statistician', provider='anthropic'),
-            LLMAgent('tactician', provider='openai'),
-            LLMAgent('sentiment_analyst', provider='anthropic')
+            # Statistician stays on OpenAI (good for structured logic)
+            LLMAgent('statistician', provider='openai', model_name='gpt-4'),
+            
+            # Tactician stays on OpenAI
+            LLMAgent('tactician', provider='openai', model_name='gpt-4'),
+            
+            # Sentiment Analyst moved to ANTHROPIC (Claude 3 Opus)
+            LLMAgent('sentiment_analyst', provider='anthropic', model_name='claude-3-opus-20240229')
         ]
 
     def run_consensus(self, match_data: Dict[str, Any], baseline_prediction=None) -> Dict[str, Any]:
@@ -22,7 +27,7 @@ class ConsensusEngine:
             analysis = agent.analyze(match_data, blind_mode=True)
             analysis['agent'] = agent.persona
             round1_results.append(analysis)
-            print(f"   👤 {agent.persona.title()}: Home {analysis.get('home_win'):.0%} | {analysis.get('reasoning')}")
+            print(f"   👤 {agent.persona.title()} ({agent.provider}): Home {analysis.get('home_win'):.0%} | {analysis.get('reasoning')}")
 
         # --- AGGREGATION (Meta-Learning Logic) ---
         # We don't just average them. We weigh them based on reliability.
