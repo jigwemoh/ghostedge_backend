@@ -4,9 +4,10 @@ import logging
 from typing import Dict, Any, List, Optional, Union
 
 # --- CONFIGURATION ---
+# We use the standard API-Football endpoint which is robust and supports the IDs you have
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-API_HOST = "free-api-live-football-data.p.rapidapi.com"
-BASE_URL = "https://free-api-live-football-data.p.rapidapi.com"
+API_HOST = "api-football-v1.p.rapidapi.com"
+BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
 
 class SoccerDataLoader:
     def __init__(self, season: str = "2024"):
@@ -26,15 +27,15 @@ class SoccerDataLoader:
             if response.status_code == 200:
                 return response.json()
             else:
-                # print(f"⚠️ API Error {endpoint}: {response.status_code}")
                 return {}
         except Exception as e:
             print(f"❌ Connection Error: {e}")
             return {}
 
     def fetch_full_match_context(self, home_team: Union[str, int], away_team: Union[str, int], *args, **kwargs) -> Dict[str, Any]:
-        print(f"🔄 Fetching Data (Free API) for {home_team} vs {away_team}...")
+        print(f"🔄 Fetching Data (API-Football) for {home_team} vs {away_team}...")
 
+        # 1. Get IDs (Prefer explicit IDs from main.py)
         event_id = kwargs.get('event_id')
         league_id = kwargs.get('league_id')
         
@@ -42,38 +43,53 @@ class SoccerDataLoader:
         standings_summary = []
         form_summary = "Form Data Unavailable"
 
-        # 1. FETCH H2H
+        # 2. FETCH MATCH DETAILS (If we have event_id)
         if event_id:
-             h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
-             if h2h_data.get("response"):
-                 matches = h2h_data["response"]
-                 # Handle dictionary vs list response structure
-                 if isinstance(matches, dict) and "h2h" in matches:
-                     matches = matches["h2h"]
-                 
-                 if isinstance(matches, list) and matches:
-                     count = len(matches)
-                     last_match = matches[0]
-                     date = last_match.get("date", "Unknown") if isinstance(last_match, dict) else "Unknown"
-                     h2h_summary = f"{count} recent meetings. Last: {date}"
+            # Get fixture details to confirm teams and get IDs if strings were passed
+            fixture_data = self._get("fixtures", {"id": event_id})
+            if fixture_data.get("response"):
+                fixture = fixture_data["response"][0]
+                h_id = fixture["teams"]["home"]["id"]
+                a_id = fixture["teams"]["away"]["id"]
+                
+                # Now fetch H2H using these IDs
+                h2h_data = self._get("fixtures/headtohead", {"h2h": f"{h_id}-{a_id}"})
+                if h2h_data.get("response"):
+                    matches = h2h_data["response"]
+                    count = len(matches)
+                    last = matches[0]
+                    date = last["fixture"]["date"][:10]
+                    score = f"{last['goals']['home']}-{last['goals']['away']}"
+                    h2h_summary = f"{count} past meetings. Last: {date} ({score})"
+                
+                # Fetch Form (Last 5 games for home team)
+                form_data = self._get("fixtures", {"team": h_id, "last": 5})
+                if form_data.get("response"):
+                    results = []
+                    for m in form_data["response"]:
+                        # Simple W/D/L calc
+                        gh = m['goals']['home']
+                        ga = m['goals']['away']
+                        if m['teams']['home']['id'] == h_id:
+                            res = "W" if gh > ga else ("D" if gh == ga else "L")
+                        else:
+                            res = "W" if ga > gh else ("D" if ga == gh else "L")
+                        results.append(res)
+                    form_summary = f"Last 5: {'-'.join(results)}"
 
-        # 2. FETCH STANDINGS (New Feature)
+        # 3. FETCH STANDINGS
         if league_id:
-            # Note: 47 is Premier League in some mappings, but we use what is passed
-            table_data = self._get("football-get-standings", {"leagueid": league_id})
+            table_data = self._get("standings", {"league": league_id, "season": 2024})
             if table_data.get("response"):
-                raw_table = table_data["response"]
-                # The API structure can be complex (league -> standings -> array)
-                if isinstance(raw_table, dict) and "standings" in raw_table:
-                    # Extract top 6 or relevant teams for brevity
-                    standings_list = raw_table["standings"][0] if raw_table["standings"] else []
-                    # Filter for just our teams if possible, or take top few
-                    for row in standings_list[:6]: # Top 6 context
-                        standings_summary.append({
-                            "rank": row.get("rank"),
-                            "team": row.get("team", {}).get("name"),
-                            "points": row.get("points")
-                        })
+                league_table = table_data["response"][0]["league"]["standings"][0]
+                # Extract top 6 for context
+                for row in league_table[:6]:
+                    standings_summary.append({
+                        "rank": row["rank"],
+                        "team": row["team"]["name"],
+                        "points": row["points"],
+                        "form": row["form"]
+                    })
 
         return {
             "match_id": str(event_id) if event_id else "Unknown",
