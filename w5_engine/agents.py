@@ -13,8 +13,8 @@ class LLMAgent:
         self.client = self._init_client()
 
     def _init_client(self):
-        # 1. SOCCERDATA (Deterministic Logic)
-        if self.provider == 'soccerdata':
+        # 1. DETERMINISTIC (No Client needed)
+        if self.provider == 'deterministic':
             return None
 
         # 2. OPENAI
@@ -24,7 +24,7 @@ class LLMAgent:
             if not api_key: print(f"⚠️ {self.persona}: OPENAI_API_KEY missing")
             return OpenAI(api_key=api_key)
         
-        # 3. ANTHROPIC (CLAUDE)
+        # 3. ANTHROPIC
         elif self.provider == 'anthropic':
             from anthropic import Anthropic
             api_key = os.getenv('ANTHROPIC_API_KEY')
@@ -35,7 +35,7 @@ class LLMAgent:
 
     def analyze(self, match_data: Dict[str, Any], blind_mode: bool = True) -> Dict[str, Any]:
         # Logic Path
-        if self.provider == 'soccerdata':
+        if self.provider == 'deterministic':
             return self._analyze_with_data(match_data)
 
         # AI Path
@@ -45,24 +45,34 @@ class LLMAgent:
         return self._parse_json(response_text)
 
     def _analyze_with_data(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Deterministic analysis using hard data."""
+        """Deterministic analysis using hard data text summaries."""
         stats = match_data.get("quantitative_features", {})
-        h2h = str(stats.get('h2h_summary', ''))
-        form = str(stats.get('home_form', ''))
+        h2h = str(stats.get('h2h_summary', '')).lower()
+        form = str(stats.get('home_form', '')).lower()
         
-        reasoning = f"Analysis based on hard data. H2H: {h2h}. Form: {form}."
-        
-        # Simple Logic
+        reasoning_parts = []
         home_prob = 0.33
-        if "meetings" in h2h.lower(): home_prob += 0.1
-        if "W-W" in form: home_prob += 0.1
         
+        # Parse H2H Text
+        if "meetings" in h2h:
+            reasoning_parts.append(f"Historical Data: {h2h}.")
+            # Simple heuristic: if data exists, give slight edge to home
+            home_prob += 0.05
+        else:
+            reasoning_parts.append("No significant H2H history found.")
+
+        # Parse Form Text
+        if "w" in form: # Rough check for wins
+            reasoning_parts.append("Recent form shows wins.")
+            home_prob += 0.05
+        
+        total = home_prob + 0.33 + (1.0 - home_prob - 0.33)
         return {
             "home_win": round(home_prob, 2),
             "draw": 0.33,
             "away_win": round(1.0 - home_prob - 0.33, 2),
-            "confidence": 0.8,
-            "reasoning": reasoning
+            "confidence": 0.7,
+            "reasoning": " ".join(reasoning_parts)
         }
 
     def _get_persona_prompt(self):
@@ -74,7 +84,8 @@ class LLMAgent:
 
     def _build_data_prompt(self, data):
         stats = data.get("quantitative_features", {})
-        return f"Match: {data.get('home_team')} vs {data.get('away_team')}. Stats: {stats}"
+        context = data.get("qualitative_context", {})
+        return f"Match: {data.get('home_team')} vs {data.get('away_team')}. Stats: {stats}. Context: {context}"
 
     def _query_model(self, system_msg, user_msg):
         try:
@@ -87,7 +98,6 @@ class LLMAgent:
                 )
                 return resp.choices[0].message.content
             
-            # FIX: Added actual Anthropic Call
             elif self.provider == 'anthropic':
                 message = self.client.messages.create(
                     model=self.model,
