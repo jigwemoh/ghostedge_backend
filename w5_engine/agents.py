@@ -56,17 +56,15 @@ class LLMAgent:
         # Parse H2H Text
         if "meetings" in h2h:
             reasoning_parts.append(f"Historical Data: {h2h}.")
-            # Simple heuristic: if data exists, give slight edge to home
             home_prob += 0.05
         else:
             reasoning_parts.append("No significant H2H history found.")
 
         # Parse Form Text
-        if "w" in form: # Rough check for wins
+        if "w" in form: 
             reasoning_parts.append("Recent form shows wins.")
             home_prob += 0.05
         
-        total = home_prob + 0.33 + (1.0 - home_prob - 0.33)
         return {
             "home_win": round(home_prob, 2),
             "draw": 0.33,
