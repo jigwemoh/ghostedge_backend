@@ -209,3 +209,21 @@ class SoccerdataClient:
                 overall.get('overall_team2_wins', 0) / max(1, overall.get('overall_games_played', 1)) * 100, 2
             )
         }
+    
+    def search_team_by_name(self, team_name: str, league_id: Optional[int] = None) -> Optional[List[Dict]]:
+        """Search for team by name in a league or globally"""
+        params = {'name': team_name}
+        if league_id:
+            params['league_id'] = league_id
+        
+        data = self._make_request('/team/search/', params)
+        if data and 'results' in data:
+            return [
+                {
+                    'id': team.get('id'),
+                    'name': team.get('name'),
+                    'league': team.get('league', {}).get('name')
+                } for team in data['results']
+            ]
+        return None
+

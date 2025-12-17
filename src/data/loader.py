@@ -33,6 +33,27 @@ class SoccerDataLoader:
             print(f"❌ Connection Error: {e}")
             return {}
 
+    def _validate_team_id(self, team_id: int, expected_team_name: str) -> bool:
+        """Verify that the team_id matches the expected team name"""
+        if not team_id or not expected_team_name:
+            return True  # Skip validation if no expected name
+        
+        try:
+            team_info = self.soccerdata_client.get_team(team_id)
+            if team_info:
+                actual_name = team_info.get('name', '').lower()
+                expected_lower = expected_team_name.lower()
+                # Check if expected team name is in actual name or vice versa
+                if expected_lower in actual_name or actual_name in expected_lower:
+                    return True
+                else:
+                    print(f"⚠️  Team ID mismatch: Expected '{expected_team_name}' but got '{team_info.get('name', 'Unknown')}'")
+                    return False
+        except Exception as e:
+            print(f"⚠️  Could not validate team {team_id}: {str(e)}")
+        
+        return True  # Don't fail on validation errors
+
     def fetch_full_match_context(self, home_team: Union[str, int], away_team: Union[str, int], *args, **kwargs) -> Dict[str, Any]:
         """Fetch match context using Soccerdata API for proper enrichment"""
         print(f"🔄 Fetching Data (Soccerdata API) for {home_team} vs {away_team}...")
@@ -41,6 +62,15 @@ class SoccerDataLoader:
         league_id = kwargs.get('league_id')
         home_team_id = kwargs.get('home_team_id')
         away_team_id = kwargs.get('away_team_id')
+        
+        # Validate team IDs match expected team names
+        if home_team and home_team_id:
+            if not self._validate_team_id(home_team_id, home_team):
+                print(f"⚠️  WARNING: Home team ID {home_team_id} may not be correct for {home_team}")
+        
+        if away_team and away_team_id:
+            if not self._validate_team_id(away_team_id, away_team):
+                print(f"⚠️  WARNING: Away team ID {away_team_id} may not be correct for {away_team}")
         
         quantitative_features = {}
         qualitative_context = {}
