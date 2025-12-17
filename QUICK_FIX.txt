@@ -1,0 +1,72 @@
+# 🚨 Quick Fix Guide: Team Data Mismatch
+
+## The Problem
+Your pipeline returns data for the **wrong teams**:
+```
+Input:  "Manchester City"     Output: "Worgl"
+Input:  "West Ham"            Output: "Asenovets"
+```
+
+## Why It's Happening
+Your **team IDs are wrong**. The IDs in your data (8456, 8654) don't match Soccerdata's system.
+
+## 3-Step Fix
+
+### 1️⃣ Find Correct IDs
+```bash
+python find_team_ids.py "Manchester City"
+python find_team_ids.py "West Ham"
+```
+
+**Output Example:**
+```
+✅ Manchester City - ID: 50
+✅ West Ham - ID: 48
+```
+
+### 2️⃣ Verify the IDs
+```bash
+python validate_match_data.py
+```
+
+Should show:
+```
+✅ VALIDATION PASSED
+```
+
+### 3️⃣ Update Your Data Source
+Replace:
+- `home_team_id: 8456` → `home_team_id: 50`
+- `away_team_id: 8654` → `away_team_id: 48`
+
+## Verification
+After fixing, match data will show:
+- ✅ Correct stadium names (Etihad, London Stadium, etc.)
+- ✅ Correct capacity numbers
+- ✅ Correct player transfers
+- ✅ Correct H2H history
+
+## If Still Wrong
+The issue is your **data source**, not the pipeline. Check:
+1. Where team IDs come from (database, API, hardcoded?)
+2. Use `find_team_ids.py` to find correct IDs for your league
+3. Update the mapping in your data source
+
+## Common Team IDs (Premier League)
+
+| Team | ID |
+|------|-----|
+| Manchester City | 50 |
+| Manchester United | 33 |
+| Liverpool | 64 |
+| Arsenal | 42 |
+| Chelsea | 49 |
+| West Ham | 48 |
+| Tottenham | 47 |
+| Brighton | 51 |
+
+**Full list**: `python find_team_ids.py "" 39`
+
+---
+
+**Status**: ✅ Tools ready - just fix your data source IDs
