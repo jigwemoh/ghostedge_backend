@@ -47,29 +47,39 @@ class LLMAgent:
     def _analyze_with_data(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
         """Deterministic analysis using hard data text summaries."""
         stats = match_data.get("quantitative_features", {})
-        h2h = str(stats.get('h2h_summary', '')).lower()
-        form = str(stats.get('home_form', '')).lower()
         
         reasoning_parts = []
         home_prob = 0.33
         
-        # Parse H2H Text
-        if "meetings" in h2h:
-            reasoning_parts.append(f"Historical Data: {h2h}.")
-            home_prob += 0.05
+        # Parse H2H Data - Using actual extracted features
+        h2h_games = stats.get('h2h_overall_games', 0)
+        h2h_home_wins = stats.get('h2h_team1_home_wins', 0)
+        h2h_total_wins_home = stats.get('h2h_team1_wins', 0)
+        h2h_total_wins_away = stats.get('h2h_team2_wins', 0)
+        h2h_win_pct = stats.get('h2h_team1_win_pct', 0)
+        
+        if h2h_games > 0:
+            reasoning_parts.append(f"H2H: {h2h_games} games, Home team {h2h_total_wins_home}W-{h2h_total_wins_away}L, Home win % {h2h_win_pct:.1f}%.")
+            # Adjust probability based on home team's H2H record
+            if h2h_win_pct > 50:
+                home_prob += 0.10
+            elif h2h_win_pct < 40:
+                home_prob -= 0.05
+            else:
+                home_prob += 0.03
         else:
-            reasoning_parts.append("No significant H2H history found.")
+            reasoning_parts.append("Limited H2H history available.")
 
-        # Parse Form Text
-        if "w" in form: 
-            reasoning_parts.append("Recent form shows wins.")
-            home_prob += 0.05
+        # Parse League Standing Data
+        league_leader_points = stats.get('league_leader_points', 0)
+        if league_leader_points > 0:
+            reasoning_parts.append(f"League leader has {league_leader_points} points.")
         
         return {
-            "home_win": round(home_prob, 2),
+            "home_win": round(min(0.95, max(0.05, home_prob)), 2),
             "draw": 0.33,
-            "away_win": round(1.0 - home_prob - 0.33, 2),
-            "confidence": 0.7,
+            "away_win": round(max(0.05, 1.0 - home_prob - 0.33), 2),
+            "confidence": 0.8,
             "reasoning": " ".join(reasoning_parts)
         }
 
@@ -83,7 +93,8 @@ class LLMAgent:
     def _build_data_prompt(self, data):
         stats = data.get("quantitative_features", {})
         context = data.get("qualitative_context", {})
-        return f"Match: {data.get('home_team')} vs {data.get('away_team')}. Stats: {stats}. Context: {context}"
+        prompt = f"Match: {data.get('home_team')} vs {data.get('away_team')}. Stats: {stats}. Context: {context}\n\nRespond with a JSON object containing: home_win, draw, away_win (probabilities 0-1), confidence (0-1), and reasoning (string)."
+        return prompt
 
     def _query_model(self, system_msg, user_msg):
         try:
