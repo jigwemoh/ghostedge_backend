@@ -4,6 +4,11 @@ import logging
 from typing import Dict, Any, List, Optional, Union
 from w5_engine.soccerdata_client import SoccerdataClient
 from w5_engine.team_id_database import find_team_id as find_team_id_in_db
+from w5_engine.cached_team_data import (
+    get_cached_team_data,
+    get_cached_h2h_data,
+    get_cached_league_data
+)
 
 # --- CONFIGURATION ---
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
@@ -50,10 +55,14 @@ class SoccerDataLoader:
                 else:
                     print(f"⚠️  Team ID mismatch: Expected '{expected_team_name}' but got '{team_info.get('name', 'Unknown')}'")
                     return False
+            else:
+                # API call failed or returned None - treat as mismatch to trigger correction
+                print(f"⚠️  Team ID mismatch: Expected '{expected_team_name}' but could not verify ID {team_id}")
+                return False
         except Exception as e:
-            print(f"⚠️  Could not validate team {team_id}: {str(e)}")
-        
-        return True  # Don't fail on validation errors
+            # On API error, treat as mismatch to trigger correction via database lookup
+            print(f"⚠️  Team ID verification failed for {team_id}: {str(e)}")
+            return False
     
     def _get_correct_team_id(self, team_name: str, league_id: int) -> Optional[int]:
         """Automatically find the correct team ID by searching local database first, then API"""
@@ -146,6 +155,17 @@ class SoccerDataLoader:
                         quantitative_features['h2h_draws'] = h2h_summary['draws']
                         quantitative_features['h2h_team1_win_pct'] = h2h_summary['team1_win_percentage']
                         quantitative_features['h2h_team1_home_wins'] = h2h_summary['team1_home_wins']
+                else:
+                    # Use cached H2H data as fallback
+                    cached_h2h = get_cached_h2h_data(home_team_id, away_team_id)
+                    if cached_h2h:
+                        print(f"   📦 Using cached H2H data")
+                        quantitative_features['h2h_overall_games'] = cached_h2h['overall_games']
+                        quantitative_features['h2h_team1_wins'] = cached_h2h['team1_wins']
+                        quantitative_features['h2h_team2_wins'] = cached_h2h['team2_wins']
+                        quantitative_features['h2h_draws'] = cached_h2h['draws']
+                        quantitative_features['h2h_team1_win_pct'] = cached_h2h['team1_win_percentage']
+                        quantitative_features['h2h_team1_home_wins'] = cached_h2h['team1_home_wins']
             
             # Fetch team transfers
             if home_team_id:
@@ -155,6 +175,13 @@ class SoccerDataLoader:
                     transfers_out = home_transfers['transfers'].get('transfers_out', [])
                     quantitative_features['home_recent_signings'] = len(transfers_in[:5])
                     quantitative_features['home_recent_departures'] = len(transfers_out[:5])
+                else:
+                    # Use cached transfer data as fallback
+                    cached_home = get_cached_team_data(home_team_id)
+                    if cached_home:
+                        print(f"   📦 Using cached transfer data for {cached_home['name']}")
+                        quantitative_features['home_recent_signings'] = len(cached_home.get('recent_signings', []))
+                        quantitative_features['home_recent_departures'] = len(cached_home.get('recent_departures', []))
             
             if away_team_id:
                 away_transfers = self.soccerdata_client.get_transfers(away_team_id)
@@ -163,6 +190,13 @@ class SoccerDataLoader:
                     transfers_out = away_transfers['transfers'].get('transfers_out', [])
                     quantitative_features['away_recent_signings'] = len(transfers_in[:5])
                     quantitative_features['away_recent_departures'] = len(transfers_out[:5])
+                else:
+                    # Use cached transfer data as fallback
+                    cached_away = get_cached_team_data(away_team_id)
+                    if cached_away:
+                        print(f"   📦 Using cached transfer data for {cached_away['name']}")
+                        quantitative_features['away_recent_signings'] = len(cached_away.get('recent_signings', []))
+                        quantitative_features['away_recent_departures'] = len(cached_away.get('recent_departures', []))
             
             # Fetch stadiums for qualitative context
             if home_team_id:
@@ -170,12 +204,26 @@ class SoccerDataLoader:
                 if home_stadium:
                     qualitative_context['home_venue'] = home_stadium.get('name', 'Unknown')
                     qualitative_context['home_capacity'] = home_stadium.get('capacity')
+                else:
+                    # Use cached stadium data as fallback
+                    cached_home = get_cached_team_data(home_team_id)
+                    if cached_home:
+                        print(f"   📦 Using cached stadium data for {cached_home['name']}")
+                        qualitative_context['home_venue'] = cached_home.get('stadium', 'Unknown')
+                        qualitative_context['home_capacity'] = cached_home.get('capacity')
             
             if away_team_id:
                 away_stadium = self.soccerdata_client.get_stadium(team_id=away_team_id)
                 if away_stadium:
                     qualitative_context['away_venue'] = away_stadium.get('name', 'Unknown')
                     qualitative_context['away_capacity'] = away_stadium.get('capacity')
+                else:
+                    # Use cached stadium data as fallback
+                    cached_away = get_cached_team_data(away_team_id)
+                    if cached_away:
+                        print(f"   📦 Using cached stadium data for {cached_away['name']}")
+                        qualitative_context['away_venue'] = cached_away.get('stadium', 'Unknown')
+                        qualitative_context['away_capacity'] = cached_away.get('capacity')
             
             # Fetch match preview for weather and AI insights
             if event_id:
