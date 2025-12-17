@@ -21,8 +21,13 @@ class ConsensusEngine:
     def run_consensus(self, match_data: Dict[str, Any], baseline_prediction=None) -> Dict[str, Any]:
         print(f"🤖 Starting Debate for {match_data.get('home_team')}...")
         
-        # Enrich match_data with API statistics
-        enriched_data = self._enrich_with_api_stats(match_data)
+        # Match data should already be enriched by the loader, but enrich further if needed
+        # by adding IDs if they're passed in
+        if 'home_team_id' in match_data and 'away_team_id' in match_data and 'league_id' in match_data:
+            enriched_data = self._enrich_with_api_stats(match_data)
+        else:
+            # Data is already enriched, just use it
+            enriched_data = match_data
         
         results = []
         for agent in self.agents:

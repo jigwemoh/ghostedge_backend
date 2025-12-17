@@ -2,6 +2,7 @@ import os
 import requests
 import logging
 from typing import Dict, Any, List, Optional, Union
+from w5_engine.soccerdata_client import SoccerdataClient
 
 # --- CONFIGURATION ---
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
@@ -14,6 +15,7 @@ class SoccerDataLoader:
             "X-RapidAPI-Key": RAPIDAPI_KEY,
             "X-RapidAPI-Host": API_HOST
         }
+        self.soccerdata_client = SoccerdataClient()
         
         if not RAPIDAPI_KEY:
             print("❌ WARNING: RAPIDAPI_KEY not found in environment.")
@@ -32,61 +34,114 @@ class SoccerDataLoader:
             return {}
 
     def fetch_full_match_context(self, home_team: Union[str, int], away_team: Union[str, int], *args, **kwargs) -> Dict[str, Any]:
-        print(f"🔄 Fetching Data (RapidAPI) for {home_team} vs {away_team}...")
+        """Fetch match context using Soccerdata API for proper enrichment"""
+        print(f"🔄 Fetching Data (Soccerdata API) for {home_team} vs {away_team}...")
 
         event_id = kwargs.get('event_id')
         league_id = kwargs.get('league_id')
+        home_team_id = kwargs.get('home_team_id')
+        away_team_id = kwargs.get('away_team_id')
         
-        h2h_summary = "No H2H data found."
-        standings_summary = []
-        form_summary = "Form Data Unavailable"
-
-        # 1. FETCH H2H (Requires Event ID for this API)
-        if event_id:
-             # Endpoint: football-get-head-to-head?eventid={id}
-             h2h_data = self._get("football-get-head-to-head", {"eventid": event_id})
-             
-             if h2h_data.get("response"):
-                 matches = h2h_data["response"]
-                 # Handle dictionary vs list response structure
-                 if isinstance(matches, dict) and "h2h" in matches:
-                     matches = matches["h2h"]
-                 
-                 if isinstance(matches, list) and matches:
-                     count = len(matches)
-                     # Get details of last match
-                     last = matches[0]
-                     date = last.get("fixture", {}).get("date", "Unknown")[:10] if isinstance(last.get("fixture"), dict) else "Unknown"
-                     h2h_summary = f"{count} past meetings. Last: {date}"
-
-        # 2. FETCH STANDINGS
-        if league_id:
-            table_data = self._get("football-get-standings", {"leagueid": league_id})
-            if table_data.get("response"):
-                raw_table = table_data["response"]
-                if isinstance(raw_table, dict) and "standings" in raw_table:
-                    standings_list = raw_table["standings"][0] if raw_table["standings"] else []
-                    # Extract top 6 for context
-                    for row in standings_list[:6]:
-                        standings_summary.append({
-                            "rank": row.get("rank"),
-                            "team": row.get("team", {}).get("name"),
-                            "points": row.get("points")
-                        })
-
-        return {
-            "match_id": str(event_id) if event_id else "Unknown",
-            "quantitative_features": {
-                "h2h_summary": h2h_summary,
-                "standings": standings_summary, 
-                "home_form": form_summary,
-                "tactical_setup": {"home_formation": "Unknown", "away_formation": "Unknown"},
-            },
-            "qualitative_context": {
+        quantitative_features = {}
+        qualitative_context = {}
+        
+        try:
+            # Fetch league standing
+            if league_id:
+                standing = self.soccerdata_client.get_standing(league_id)
+                if standing and standing.get('stage'):
+                    for stage in standing['stage']:
+                        standings_list = stage.get('standings', [])
+                        if standings_list:
+                            quantitative_features['league_teams_count'] = len(standings_list)
+                            quantitative_features['league_leader_points'] = standings_list[0].get('points')
+                            quantitative_features['standings_summary'] = [
+                                {
+                                    "rank": row.get('rank'),
+                                    "team": row.get('team', {}).get('name'),
+                                    "points": row.get('points')
+                                } for row in standings_list[:6]
+                            ]
+            
+            # Fetch head-to-head stats
+            if home_team_id and away_team_id:
+                h2h = self.soccerdata_client.get_head_to_head(home_team_id, away_team_id)
+                if h2h:
+                    h2h_summary = self.soccerdata_client.extract_h2h_stats(home_team_id, away_team_id)
+                    if h2h_summary:
+                        quantitative_features['h2h_overall_games'] = h2h_summary['overall_games']
+                        quantitative_features['h2h_team1_wins'] = h2h_summary['team1_wins']
+                        quantitative_features['h2h_team2_wins'] = h2h_summary['team2_wins']
+                        quantitative_features['h2h_draws'] = h2h_summary['draws']
+                        quantitative_features['h2h_team1_win_pct'] = h2h_summary['team1_win_percentage']
+                        quantitative_features['h2h_team1_home_wins'] = h2h_summary['team1_home_wins']
+            
+            # Fetch team transfers
+            if home_team_id:
+                home_transfers = self.soccerdata_client.get_transfers(home_team_id)
+                if home_transfers and home_transfers.get('transfers'):
+                    transfers_in = home_transfers['transfers'].get('transfers_in', [])
+                    transfers_out = home_transfers['transfers'].get('transfers_out', [])
+                    quantitative_features['home_recent_signings'] = len(transfers_in[:5])
+                    quantitative_features['home_recent_departures'] = len(transfers_out[:5])
+            
+            if away_team_id:
+                away_transfers = self.soccerdata_client.get_transfers(away_team_id)
+                if away_transfers and away_transfers.get('transfers'):
+                    transfers_in = away_transfers['transfers'].get('transfers_in', [])
+                    transfers_out = away_transfers['transfers'].get('transfers_out', [])
+                    quantitative_features['away_recent_signings'] = len(transfers_in[:5])
+                    quantitative_features['away_recent_departures'] = len(transfers_out[:5])
+            
+            # Fetch stadiums for qualitative context
+            if home_team_id:
+                home_stadium = self.soccerdata_client.get_stadium(team_id=home_team_id)
+                if home_stadium:
+                    qualitative_context['home_venue'] = home_stadium.get('name', 'Unknown')
+                    qualitative_context['home_capacity'] = home_stadium.get('capacity')
+            
+            if away_team_id:
+                away_stadium = self.soccerdata_client.get_stadium(team_id=away_team_id)
+                if away_stadium:
+                    qualitative_context['away_venue'] = away_stadium.get('name', 'Unknown')
+                    qualitative_context['away_capacity'] = away_stadium.get('capacity')
+            
+            # Fetch match preview for weather and AI insights
+            if event_id:
+                preview = self.soccerdata_client.get_match_preview(event_id)
+                if preview and preview.get('match_data'):
+                    match_data = preview['match_data']
+                    qualitative_context['weather'] = match_data.get('weather')
+                    qualitative_context['excitement_rating'] = match_data.get('excitement_rating')
+                    qualitative_context['ai_prediction'] = match_data.get('prediction', {}).get('choice')
+        
+        except Exception as e:
+            print(f"❌ Error fetching from Soccerdata API: {str(e)}")
+        
+        # Set sensible defaults if data is empty
+        if not quantitative_features:
+            quantitative_features = {
+                "h2h_summary": "No H2H data found.",
+                "standings": [],
+                "home_form": "Form Data Unavailable",
+            }
+        
+        if not qualitative_context:
+            qualitative_context = {
                 "news_headlines": "Live news requires paid tier",
                 "venue": "Venue info available in fixture details",
                 "referee": "Referee info available in fixture details"
             }
+        
+        return {
+            "match_id": str(event_id) if event_id else "Unknown",
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_team_id": home_team_id,
+            "away_team_id": away_team_id,
+            "league_id": league_id,
+            "quantitative_features": quantitative_features,
+            "qualitative_context": qualitative_context
         }
 
 # --- INSTANTIATE ---

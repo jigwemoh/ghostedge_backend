@@ -64,12 +64,14 @@ async def run_consensus(match: MatchRequest):
         print(f"👻 GhostEdge Analyzing: {match.home_team_name} vs {match.away_team_name} (Event {match.event_id})...")
 
         # --- STEP A: FETCH REAL DATA ---
-        # FIX: We now pass 'event_id' and 'league_id' so the loader can actually find data.
+        # Pass all required IDs for proper API enrichment
         match_context = real_data_loader.fetch_full_match_context(
             home_team=match.home_team_name,
             away_team=match.away_team_name,
             event_id=match.event_id,
-            league_id=match.league_id
+            league_id=match.league_id,
+            home_team_id=match.home_team_id,
+            away_team_id=match.away_team_id
         )
 
         # --- STEP B: PREPARE DATA FOR AI AGENTS ---
