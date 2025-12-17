@@ -3,6 +3,7 @@ import requests
 import logging
 from typing import Dict, Any, List, Optional, Union
 from w5_engine.soccerdata_client import SoccerdataClient
+from w5_engine.team_id_database import find_team_id as find_team_id_in_db
 
 # --- CONFIGURATION ---
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
@@ -53,6 +54,38 @@ class SoccerDataLoader:
             print(f"⚠️  Could not validate team {team_id}: {str(e)}")
         
         return True  # Don't fail on validation errors
+    
+    def _get_correct_team_id(self, team_name: str, league_id: int) -> Optional[int]:
+        """Automatically find the correct team ID by searching local database first, then API"""
+        if not team_name:
+            return None
+        
+        # Try local database first (instant, no API call)
+        try:
+            print(f"🔍 Looking up {team_name} in team database...")
+            correct_id = find_team_id_in_db(team_name)
+            
+            if correct_id:
+                print(f"✅ Found in database: {team_name} (ID: {correct_id})")
+                return correct_id
+        except Exception as e:
+            print(f"⚠️  Error searching database: {str(e)}")
+        
+        # Fall back to API search if database fails
+        try:
+            print(f"🔍 Searching API for {team_name} in league {league_id}...")
+            results = self.soccerdata_client.search_team_by_name(team_name, league_id)
+            
+            if results and len(results) > 0:
+                correct_id = results[0]['id']
+                print(f"✅ Found via API: {results[0]['name']} (ID: {correct_id})")
+                return correct_id
+            else:
+                print(f"❌ Could not find team '{team_name}' in league {league_id}")
+                return None
+        except Exception as e:
+            print(f"⚠️  Error searching API: {str(e)}")
+            return None
 
     def fetch_full_match_context(self, home_team: Union[str, int], away_team: Union[str, int], *args, **kwargs) -> Dict[str, Any]:
         """Fetch match context using Soccerdata API for proper enrichment"""
@@ -63,14 +96,22 @@ class SoccerDataLoader:
         home_team_id = kwargs.get('home_team_id')
         away_team_id = kwargs.get('away_team_id')
         
-        # Validate team IDs match expected team names
-        if home_team and home_team_id:
+        # AUTO-CORRECT TEAM IDs IF THEY DON'T MATCH
+        if home_team and league_id:
             if not self._validate_team_id(home_team_id, home_team):
-                print(f"⚠️  WARNING: Home team ID {home_team_id} may not be correct for {home_team}")
+                print(f"⚠️  Auto-correcting home team ID...")
+                correct_id = self._get_correct_team_id(home_team, league_id)
+                if correct_id:
+                    print(f"   Changing {home_team_id} → {correct_id}")
+                    home_team_id = correct_id
         
-        if away_team and away_team_id:
+        if away_team and league_id:
             if not self._validate_team_id(away_team_id, away_team):
-                print(f"⚠️  WARNING: Away team ID {away_team_id} may not be correct for {away_team}")
+                print(f"⚠️  Auto-correcting away team ID...")
+                correct_id = self._get_correct_team_id(away_team, league_id)
+                if correct_id:
+                    print(f"   Changing {away_team_id} → {correct_id}")
+                    away_team_id = correct_id
         
         quantitative_features = {}
         qualitative_context = {}
