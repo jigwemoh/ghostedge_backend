@@ -44,12 +44,15 @@ class ConsensusEngine:
         weights = {"statistician": 1.5, "tactician": 1.0, "sentiment_analyst": 0.8}
         final_pred = self._calculate_weighted_average(results, weights)
         
+        # Generate comprehensive debate summary
+        debate_summary = self._generate_debate_summary(results, weights, final_pred, enriched_data)
+        
         return {
             "consensus_prediction": final_pred,
-            "confidence": 0.5,
-            "agreement_score": 0.5,
-            "debate_summary": "Debate complete.",
-            "agent_analyses": results,
+            "confidence": self._calculate_confidence(results),
+            "agreement_score": self._calculate_agreement_score(results),
+            "debate_summary": debate_summary,
+            "agent_analyses": self._format_agent_analyses(results, weights),
             "api_enrichment": enriched_data.get('api_stats', {})
         }
 
@@ -81,10 +84,6 @@ class ConsensusEngine:
             "draw": d_avg,
             "away_win": a_avg
         }
-    
-    # ... (Keep agreement/summary methods if needed)
-    def _calculate_agreement(self, results):
-        return 0.5 # Simplified for stability
     
     def _enrich_with_api_stats(self, match_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -216,3 +215,178 @@ class ConsensusEngine:
             context['home_recent_departures'] = len(transfers_out[:3])
         
         return context
+
+    def _format_agent_analyses(self, results: List[Dict], weights: Dict) -> List[Dict]:
+        """Format agent analyses with weights and detailed predictions"""
+        formatted = []
+        for res in results:
+            agent_name = res.get('agent')
+            weight = weights.get(agent_name, 1.0)
+            formatted.append({
+                "agent": agent_name,
+                "weight": f"{weight}x",
+                "prediction": {
+                    "home_win": res.get('home_win'),
+                    "draw": res.get('draw'),
+                    "away_win": res.get('away_win')
+                },
+                "confidence": res.get('confidence', 0),
+                "reasoning": res.get('reasoning', ''),
+                "weighted_contribution": {
+                    "home_win": round((res.get('home_win', 0.33) * weight), 3),
+                    "draw": round((res.get('draw', 0.33) * weight), 3),
+                    "away_win": round((res.get('away_win', 0.33) * weight), 3)
+                }
+            })
+        return formatted
+
+    def _calculate_confidence(self, results: List[Dict]) -> float:
+        """Calculate overall confidence based on agent agreement"""
+        if not results:
+            return 0.5
+        
+        # Calculate variance in home_win predictions
+        home_wins = [r.get('home_win', 0.33) for r in results]
+        variance = np.var(home_wins)
+        
+        # Lower variance = higher confidence
+        # Convert variance to confidence score (0-1)
+        confidence = max(0.3, 1.0 - (variance * 3))
+        return round(min(1.0, confidence), 2)
+
+    def _calculate_agreement_score(self, results: List[Dict]) -> float:
+        """Calculate agreement between agents (0-1)"""
+        if len(results) < 2:
+            return 1.0
+        
+        home_wins = [r.get('home_win', 0.33) for r in results]
+        max_diff = max(home_wins) - min(home_wins)
+        
+        # Lower max difference = higher agreement
+        agreement = max(0.0, 1.0 - (max_diff * 2))
+        return round(agreement, 2)
+
+    def _generate_debate_summary(self, results: List[Dict], weights: Dict, 
+                                 final_pred: Dict, enriched_data: Dict) -> str:
+        """Generate comprehensive debate summary with all agent analyses"""
+        
+        summary_lines = []
+        summary_lines.append("=" * 80)
+        summary_lines.append("🎯 CONSENSUS DEBATE SUMMARY")
+        summary_lines.append("=" * 80)
+        
+        # Match info
+        home = enriched_data.get('home_team', 'Home Team')
+        away = enriched_data.get('away_team', 'Away Team')
+        summary_lines.append(f"\n📌 MATCH: {home} vs {away}\n")
+        
+        # Agent analyses
+        summary_lines.append("┌" + "─" * 78 + "┐")
+        summary_lines.append("│ 👥 AGENT ANALYSES (Individual Predictions)                                      │")
+        summary_lines.append("├" + "─" * 78 + "┤")
+        
+        for i, res in enumerate(results, 1):
+            agent = res.get('agent', 'Unknown')
+            weight = weights.get(agent, 1.0)
+            hw = res.get('home_win', 0.33)
+            draw = res.get('draw', 0.33)
+            aw = res.get('away_win', 0.33)
+            conf = res.get('confidence', 0)
+            reasoning = res.get('reasoning', 'No reasoning provided')
+            
+            # Format agent name with icon
+            icon_map = {
+                'statistician': '📊',
+                'tactician': '🎯',
+                'sentiment_analyst': '😊'
+            }
+            icon = icon_map.get(agent, '🤖')
+            
+            summary_lines.append(f"│                                                                              │")
+            summary_lines.append(f"│ {i}. {icon} {agent.upper()} (Weight: {weight}x)                            │")
+            summary_lines.append(f"│    Prediction: {home} {hw*100:5.1f}% | Draw {draw*100:5.1f}% | {away} {aw*100:5.1f}%│")
+            summary_lines.append(f"│    Confidence: {conf:.0%}                                                    │")
+            
+            # Wrap reasoning text
+            reasoning_wrapped = self._wrap_text(reasoning, 72)
+            summary_lines.append(f"│    Reasoning: {reasoning_wrapped[0]:<72}│")
+            for reason_line in reasoning_wrapped[1:]:
+                summary_lines.append(f"│               {reason_line:<72}│")
+        
+        summary_lines.append("├" + "─" * 78 + "┤")
+        summary_lines.append("│ 🔄 WEIGHTED CONSENSUS CALCULATION                                              │")
+        summary_lines.append("├" + "─" * 78 + "┤")
+        
+        # Show calculation
+        total_weight = sum(weights.values())
+        for res in results:
+            agent = res.get('agent')
+            weight = weights.get(agent, 1.0)
+            hw = res.get('home_win', 0.33)
+            draw = res.get('draw', 0.33)
+            aw = res.get('away_win', 0.33)
+            hw_contrib = round(hw * weight, 3)
+            d_contrib = round(draw * weight, 3)
+            aw_contrib = round(aw * weight, 3)
+            
+            icon_map = {
+                'statistician': '📊',
+                'tactician': '🎯',
+                'sentiment_analyst': '😊'
+            }
+            icon = icon_map.get(agent, '🤖')
+            
+            summary_lines.append(f"│ {icon} {agent:<20} ({weight}x): H:{hw_contrib:.3f} D:{d_contrib:.3f} A:{aw_contrib:.3f}   │")
+        
+        summary_lines.append(f"│ {'─' * 76} │")
+        summary_lines.append(f"│ Total Weight: {total_weight}x                                                        │")
+        
+        h_final = final_pred.get('home_win', 0)
+        d_final = final_pred.get('draw', 0)
+        a_final = final_pred.get('away_win', 0)
+        
+        summary_lines.append("├" + "─" * 78 + "┤")
+        summary_lines.append("│ ✅ FINAL CONSENSUS PREDICTION                                                  │")
+        summary_lines.append("├" + "─" * 78 + "┤")
+        summary_lines.append(f"│                                                                              │")
+        summary_lines.append(f"│ {home:<25} {h_final*100:6.2f}%  ████████░░░                             │")
+        summary_lines.append(f"│ Draw                       {d_final*100:6.2f}%  ███░░░░░░░░                          │")
+        summary_lines.append(f"│ {away:<25} {a_final*100:6.2f}%  {self._get_bar(a_final):<25}                    │")
+        summary_lines.append(f"│                                                                              │")
+        
+        # Determine likely outcome
+        outcomes = [
+            (h_final, f"{home} Win"),
+            (d_final, "Draw"),
+            (a_final, f"{away} Win")
+        ]
+        most_likely = max(outcomes, key=lambda x: x[0])
+        summary_lines.append(f"│ 🏆 Most Likely Outcome: {most_likely[1]} ({most_likely[0]*100:.1f}%)                      │")
+        
+        summary_lines.append("└" + "─" * 78 + "┘")
+        
+        return "\n".join(summary_lines)
+
+    def _wrap_text(self, text: str, width: int) -> List[str]:
+        """Wrap text to specified width, returns list of lines"""
+        words = text.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            if len(' '.join(current_line + [word])) <= width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        return lines if lines else ['']
+
+    def _get_bar(self, value: float, length: int = 10) -> str:
+        """Generate a simple ASCII bar for visualization"""
+        filled = int(value * length)
+        return '█' * filled + '░' * (length - filled)
